@@ -1,0 +1,10 @@
+Itaú preta, /Users/erickcamara/Downloads/itau_preta.jpeg
+Almaviva Santander, /Users/erickcamara/Downloads/av_santander.png
+bradesco, /Users/erickcamara/Downloads/bradesco.jpeg
+TRC porto, /Users/erickcamara/Downloads/porto.jpg
+TRC bradesco, /Users/erickcamara/Downloads/bradesco.jpg
+Bellinati, /Users/erickcamara/Library/Mobile Documents/com~apple~CloudDocs/Documents/NEFEX/kamikaze-service/public/images/Bellinati.jpeg
+Bellinati Random, /Users/erickcamara/Downloads/Bellinati_v09.jpeg
+Bellinati Branca, /Users/erickcamara/Library/Mobile Documents/com~apple~CloudDocs/Documents/NEFEX/kamikaze-service/public/images/bellinati-branca.jpeg
+mlgomes, /Users/erickcamara/Library/Mobile Documents/com~apple~CloudDocs/Documents/NEFEX/kamikaze-service/public/images/mlgomes.png
+Rede fácil, /Users/erickcamara/Downloads/IZA_2.png
