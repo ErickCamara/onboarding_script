@@ -1,17 +1,17 @@
 [
   {
-    "id": "decea76f-7882-4901-bc25-12964fa706ec",
-    "accountName": "551152900467",
-    "token": "null",
-    "templateName": "demanda_98514000000",
+    "id": "f7b706d3-2166-4396-a20c-ee1a1a1e5ec5",
+    "accountName": "556225300769",
+    "token": "FZvieNTz57EQV6A60XZtlMTGAK",
+    "templateName": "pedido_notificacao_32194382132477",
     "metaParams": [],
     "wasDelivered": ""
   },
   {
-    "id": "3715d0d8-eb77-4eb5-914f-ce430023ba0a",
-    "accountName": "551152900465",
-    "token": "null",
-    "templateName": "tratativa_568106577777777",
+    "id": "052d0bb0-fa53-46d6-9700-805a33bd158a",
+    "accountName": "556225300771",
+    "token": "5dd8CppxAktBw0kDuPPH5BTHAK",
+    "templateName": "status_11291192155",
     "metaParams": [],
     "wasDelivered": ""
   }

@@ -675,17 +675,6 @@ async function confirmSummary(rl, title, fields) {
 }
 
 /**
- * Confirma uma escolha única de menu/lista antes de seguir (mesma ideia do
- * confirmSummary, só que pra um valor só). Quem chama deve estar num
- * `while(true)` e voltar a perguntar se isso retornar false — é o "voltar"
- * dos menus de escolha única, que antes aplicavam a resposta na hora sem
- * chance de revisão.
- */
-async function confirmChoice(rl, label, value) {
-  return confirmSummary(rl, 'Você escolheu:', { [label]: value });
-}
-
-/**
  * Pergunta, para UMA integração, se ela deve ser inserida/atualizada no
  * integration_work_around e com qual valor de block_response.
  * OBS: a origem de "new_from" ainda não foi confirmada, então por enquanto
@@ -795,24 +784,16 @@ async function askTemplateStrategy(rl, { disallowTemplateConfig = false } = {}) 
     console.log('3 - Nenhuma das duas');
 
     const raw = await ask(rl, '\nEscolha uma opção: ');
-    let strategy;
     if (raw === '1') {
       if (disallowTemplateConfig) {
         console.log('template_config não pode ser usado com esse bodyType (botão de URL variável). Escolha 2 ou 3.');
         continue;
       }
-      strategy = 'template_config';
-    } else if (raw === '2') {
-      strategy = 'template_config_pool';
-    } else if (raw === '3') {
-      strategy = 'none';
-    } else {
-      console.log(`Opção inválida ("${raw}"). Tente novamente.`);
-      continue;
+      return 'template_config';
     }
-
-    if (await confirmChoice(rl, 'estratégia de template', strategy)) return strategy;
-    console.log('Vamos escolher de novo.');
+    if (raw === '2') return 'template_config_pool';
+    if (raw === '3') return 'none';
+    console.log(`Opção inválida ("${raw}"). Tente novamente.`);
   }
 }
 
@@ -941,23 +922,10 @@ async function askNumberScopeChoice(rl, number, actionLabel = 'Configurar templa
     console.log('3 - Pular todos os restantes');
 
     const raw = await ask(rl, '\nEscolha uma opção: ');
-    let choice, label;
-    if (raw === '1') {
-      choice = 'configure';
-      label = actionLabel;
-    } else if (raw === '2') {
-      choice = 'skip';
-      label = `Pular ${number}`;
-    } else if (raw === '3') {
-      choice = 'skip-rest';
-      label = 'Pular todos os restantes';
-    } else {
-      console.log(`Opção inválida ("${raw}"). Tente novamente.`);
-      continue;
-    }
-
-    if (await confirmChoice(rl, `opção para ${number}`, label)) return choice;
-    console.log('Vamos escolher de novo.');
+    if (raw === '1') return 'configure';
+    if (raw === '2') return 'skip';
+    if (raw === '3') return 'skip-rest';
+    console.log(`Opção inválida ("${raw}"). Tente novamente.`);
   }
 }
 
@@ -1024,12 +992,7 @@ async function collectDirectNyxPoolForAllNumbers(rl, ready, summary) {
     return [];
   }
 
-  let poolId;
-  while (true) {
-    poolId = await askUuid(rl, 'Valor do pool_id (UUID) a usar para todos os números: ');
-    if (await confirmChoice(rl, 'pool_id', poolId)) break;
-    console.log('Vamos preencher de novo.');
-  }
+  const poolId = await askUuid(rl, 'Valor do pool_id (UUID) a usar para todos os números: ');
   const poolConfigsCollected = [];
 
   for (const integration of ready) {
@@ -1238,17 +1201,9 @@ async function askOnboardingMode(rl) {
     console.log('2 - Configuração padrão (número a número)');
 
     const raw = await ask(rl, '\nEscolha uma opção: ');
-    let mode;
-    if (raw === '1') mode = 'mass';
-    else if (raw === '2') mode = 'standard';
-    else {
-      console.log(`Opção inválida ("${raw}"). Tente novamente.`);
-      continue;
-    }
-
-    const label = mode === 'mass' ? 'Configuração massiva' : 'Configuração padrão';
-    if (await confirmChoice(rl, 'modo de configuração', label)) return mode;
-    console.log('Vamos escolher de novo.');
+    if (raw === '1') return 'mass';
+    if (raw === '2') return 'standard';
+    console.log(`Opção inválida ("${raw}"). Tente novamente.`);
   }
 }
 
@@ -1728,11 +1683,8 @@ async function chooseBodyType(rl) {
       continue;
     }
 
-    if (await confirmChoice(rl, 'tipo de teste', bodyType)) {
-      console.log(`Tipo selecionado: ${bodyType}`);
-      return bodyType;
-    }
-    console.log('Vamos escolher de novo.');
+    console.log(`Tipo selecionado: ${bodyType}`);
+    return bodyType;
   }
 }
 
@@ -1744,26 +1696,24 @@ async function selecionarIntegracaoDoDados(rl) {
     return null;
   }
 
-  while (true) {
-    console.log('\n=== INTEGRAÇÕES DISPONÍVEIS (dados.txt) ===');
-    integrations.forEach((integ, index) => {
-      console.log(`${index + 1} - ${integ.number} | template: ${integ.templateName} | integrationId: ${integ.integrationId}`);
-    });
+  console.log('\n=== INTEGRAÇÕES DISPONÍVEIS (dados.txt) ===');
+  integrations.forEach((integ, index) => {
+    console.log(`${index + 1} - ${integ.number} | template: ${integ.templateName} | integrationId: ${integ.integrationId}`);
+  });
 
+  let selecionada = null;
+  while (!selecionada) {
     const raw = await ask(rl, '\nEscolha o número da integração: ');
     const idx = parseInt(raw.replace(/\D/g, ''), 10) - 1;
 
-    if (!(Number.isInteger(idx) && integrations[idx])) {
+    if (Number.isInteger(idx) && integrations[idx]) {
+      selecionada = integrations[idx];
+    } else {
       console.log(`Opção inválida ("${raw}"). Tente novamente.`);
-      continue;
     }
-
-    const selecionada = integrations[idx];
-    if (await confirmChoice(rl, 'integração', `${selecionada.number} | template: ${selecionada.templateName}`)) {
-      return selecionada;
-    }
-    console.log('Vamos escolher de novo.');
   }
+
+  return selecionada;
 }
 
 /**
@@ -1795,57 +1745,51 @@ async function selecionarCredencialDeImagem(rl, integration = null) {
   const autoMatch = findCredencialForIntegration(credenciais, integration);
   if (autoMatch) {
     console.log(`\nCredencial encontrada automaticamente para ${integration.number}: Infobip | sender: ${autoMatch.sender}`);
-    if (await confirmChoice(rl, 'credencial (automática)', `Infobip | sender: ${autoMatch.sender}`)) {
-      return autoMatch;
-    }
-    console.log('Ok, vamos escolher manualmente.');
+    return autoMatch;
   }
 
-  while (true) {
-    console.log(`\n=== CREDENCIAIS DISPONÍVEIS (${CREDENCIAIS_FILE_PATH}) ===`);
-    credenciais.forEach((cred, index) => {
-      const label = cred.broker === 'INFOBIP'
-        ? `Infobip | sender: ${cred.sender}`
-        : `${cred.broker} | profileCode: ${cred.profileCode}`;
-      console.log(`${index + 1} - ${label}`);
-    });
+  console.log(`\n=== CREDENCIAIS DISPONÍVEIS (${CREDENCIAIS_FILE_PATH}) ===`);
+  credenciais.forEach((cred, index) => {
+    const label = cred.broker === 'INFOBIP'
+      ? `Infobip | sender: ${cred.sender}`
+      : `${cred.broker} | profileCode: ${cred.profileCode}`;
+    console.log(`${index + 1} - ${label}`);
+  });
 
+  let selecionada = null;
+  while (!selecionada) {
     const raw = await ask(rl, '\nEscolha o número da credencial: ');
     const idx = parseInt(raw.replace(/\D/g, ''), 10) - 1;
 
-    if (!(Number.isInteger(idx) && credenciais[idx])) {
+    if (Number.isInteger(idx) && credenciais[idx]) {
+      selecionada = credenciais[idx];
+    } else {
       console.log(`Opção inválida ("${raw}"). Tente novamente.`);
-      continue;
     }
-
-    const selecionada = credenciais[idx];
-    const label = selecionada.broker === 'INFOBIP'
-      ? `Infobip | sender: ${selecionada.sender}`
-      : `${selecionada.broker} | profileCode: ${selecionada.profileCode}`;
-    if (await confirmChoice(rl, 'credencial', label)) return selecionada;
-    console.log('Vamos escolher de novo.');
   }
+
+  return selecionada;
 }
 
 async function escolherLogoInfobip(rl) {
-  while (true) {
-    console.log('\n=== LOGOS DISPONÍVEIS (Infobip) ===');
-    INFOBIP_LOGO_OPTIONS.forEach((logo, index) => {
-      console.log(`${index + 1} - ${logo.label}`);
-    });
+  console.log('\n=== LOGOS DISPONÍVEIS (Infobip) ===');
+  INFOBIP_LOGO_OPTIONS.forEach((logo, index) => {
+    console.log(`${index + 1} - ${logo.label}`);
+  });
 
+  let selecionado = null;
+  while (!selecionado) {
     const raw = await ask(rl, '\nEscolha o número do logo: ');
     const idx = parseInt(raw.replace(/\D/g, ''), 10) - 1;
 
-    if (!(Number.isInteger(idx) && INFOBIP_LOGO_OPTIONS[idx])) {
+    if (Number.isInteger(idx) && INFOBIP_LOGO_OPTIONS[idx]) {
+      selecionado = INFOBIP_LOGO_OPTIONS[idx];
+    } else {
       console.log(`Opção inválida ("${raw}"). Tente novamente.`);
-      continue;
     }
-
-    const selecionado = INFOBIP_LOGO_OPTIONS[idx];
-    if (await confirmChoice(rl, 'logo Infobip', selecionado.label)) return selecionado.url;
-    console.log('Vamos escolher de novo.');
   }
+
+  return selecionado.url;
 }
 
 async function escolherImagemLocal(rl) {
@@ -1857,24 +1801,24 @@ async function escolherImagemLocal(rl) {
     return null;
   }
 
-  while (true) {
-    console.log(`\n=== IMAGENS DISPONÍVEIS (${IMAGENS_LOCAIS_FILE_PATH}) ===`);
-    imagens.forEach((img, index) => {
-      console.log(`${index + 1} - ${img.label}`);
-    });
+  console.log(`\n=== IMAGENS DISPONÍVEIS (${IMAGENS_LOCAIS_FILE_PATH}) ===`);
+  imagens.forEach((img, index) => {
+    console.log(`${index + 1} - ${img.label}`);
+  });
 
+  let selecionada = null;
+  while (!selecionada) {
     const raw = await ask(rl, '\nEscolha o número da imagem: ');
     const idx = parseInt(raw.replace(/\D/g, ''), 10) - 1;
 
-    if (!(Number.isInteger(idx) && imagens[idx])) {
+    if (Number.isInteger(idx) && imagens[idx]) {
+      selecionada = imagens[idx];
+    } else {
       console.log(`Opção inválida ("${raw}"). Tente novamente.`);
-      continue;
     }
-
-    const selecionada = imagens[idx];
-    if (await confirmChoice(rl, 'imagem local', selecionada.label)) return selecionada.path;
-    console.log('Vamos escolher de novo.');
   }
+
+  return selecionada.path;
 }
 
 async function menuTestarIntegracao(rl) {
