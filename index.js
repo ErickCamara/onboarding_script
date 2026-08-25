@@ -4,7 +4,7 @@ const fs = require("fs");
 const path = require("path");
 const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
 const { DynamoDBDocumentClient, PutCommand } = require('@aws-sdk/lib-dynamodb');
-const { waMetaDatabase, lakeDatabase, wa360Database, waInfoBipDatabase, waMetaWorkAroundDatabase, wa360WorkAroundDatabase, waInfoBipWorkAroundDatabase, waMetaTemplateConfigPoolDatabase, wa360TemplateConfigPoolDatabase, waInfoBipTemplateConfigPoolDatabase } = require('./database/whatsappDb.js')
+const { templateConfigDatabase, lakeDatabase, integrationWorkAroundDatabase, templateConfigPoolDatabase } = require('./database/whatsappDb.js')
 const { SQSClient, SendMessageCommand } = require("@aws-sdk/client-sqs");
 const { randomizeOnce, randomizeAndUploadImage } = require('./imageRandomizer.js');
 
@@ -210,48 +210,22 @@ async function createIntegration(bodyType = testBodyType) {
 
       if (integration.type === '360') {
         console.log(`Integração ${integration.number} é do tipo 360 — pulando criação e indo direto para teste...`);
-        if (addTemplateConfig) {
-          try {
-            await wa360Database({
-              integrationId: response.data.data.id,
-              name: integration.templateName || 'Default Template',
-              metaParams: integration.metaParams ? integration.metaParams : []
-            });
-            console.log("Template inserido na base");
-          } catch (templateError) {
-            console.error('Falha ao inserir template (360), seguindo mesmo assim:', templateError.message);
-          }
-        }
-      } else if (integration.type === 'META') {
-        if (addTemplateConfig) {
-          const language = integration.lang || null;
-          try {
-            await waMetaDatabase({
-              integrationId: response.data.data.id,
-              name: integration.templateName || 'Default Template',
-              metaParams: integration.metaParams ? integration.metaParams : [],
-              language: language
-            });
-            console.log("Template inserido na base");
-          } catch (templateError) {
-            console.error('Falha ao inserir template (META), seguindo mesmo assim:', templateError.message);
-          }
-        }
       } else if (integration.type === 'INFOBIP') {
         console.log(`Integração ${integration.number} é do tipo INFOBIP — pulando criação e indo direto para teste...`);
-        if (addTemplateConfig) {
-          const language = integration.lang || null;
-          try {
-            await waInfoBipDatabase({
-              integrationId: response.data.data.id,
-              name: integration.templateName || 'Default Template',
-              metaParams: integration.metaParams ? integration.metaParams : [],
-              language: language
-            });
-            console.log("Template inserido na base");
-          } catch (templateError) {
-            console.error('Falha ao inserir template (INFOBIP), seguindo mesmo assim:', templateError.message);
-          }
+      }
+
+      if (['360', 'META', 'INFOBIP'].includes(integration.type) && addTemplateConfig) {
+        const language = integration.type === '360' ? null : (integration.lang || null);
+        try {
+          await templateConfigDatabase({
+            integrationId: response.data.data.id,
+            name: integration.templateName || 'Default Template',
+            metaParams: integration.metaParams ? integration.metaParams : [],
+            language: language
+          });
+          console.log("Template inserido na base");
+        } catch (templateError) {
+          console.error(`Falha ao inserir template (${integration.type}), seguindo mesmo assim:`, templateError.message);
         }
       }
 
@@ -625,15 +599,11 @@ async function addTemplateToDatabase(integration) {
     language
   };
 
-  if (integration.type === '360') {
-    return wa360Database(params);
-  } else if (integration.type === 'META') {
-    return waMetaDatabase(params);
-  } else if (integration.type === 'INFOBIP') {
-    return waInfoBipDatabase(params);
+  if (!['360', 'META', 'INFOBIP'].includes(integration.type)) {
+    throw new Error(`Tipo de broker desconhecido para template config: ${integration.type}`);
   }
 
-  throw new Error(`Tipo de broker desconhecido para template config: ${integration.type}`);
+  return templateConfigDatabase(params);
 }
 
 /**
@@ -712,17 +682,12 @@ async function applyWorkAround(integration, { blockResponse, newFrom }) {
     blockResponse,
   };
 
-  if (integration.type === '360') {
-    await wa360WorkAroundDatabase(params);
-  } else if (integration.type === 'META') {
-    await waMetaWorkAroundDatabase(params);
-  } else if (integration.type === 'INFOBIP') {
-    await waInfoBipWorkAroundDatabase(params);
-  } else {
+  if (!['360', 'META', 'INFOBIP'].includes(integration.type)) {
     console.log(`Tipo de broker desconhecido (${integration.type}), pulando integration_work_around.`);
     return 'skipped';
   }
 
+  await integrationWorkAroundDatabase(params);
   return 'applied';
 }
 
@@ -757,15 +722,11 @@ async function addTemplateToPoolDatabase(integration, poolConfig) {
     newIntegrationId: poolConfig.newIntegrationId,
   };
 
-  if (integration.type === '360') {
-    return wa360TemplateConfigPoolDatabase(params);
-  } else if (integration.type === 'META') {
-    return waMetaTemplateConfigPoolDatabase(params);
-  } else if (integration.type === 'INFOBIP') {
-    return waInfoBipTemplateConfigPoolDatabase(params);
+  if (!['360', 'META', 'INFOBIP'].includes(integration.type)) {
+    throw new Error(`Tipo de broker desconhecido para template_config_pool: ${integration.type}`);
   }
 
-  throw new Error(`Tipo de broker desconhecido para template_config_pool: ${integration.type}`);
+  return templateConfigPoolDatabase(params);
 }
 
 /**

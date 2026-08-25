@@ -1,17 +1,17 @@
 [
   {
-    "id": "f7b706d3-2166-4396-a20c-ee1a1a1e5ec5",
-    "accountName": "556225300769",
-    "token": "FZvieNTz57EQV6A60XZtlMTGAK",
-    "templateName": "pedido_notificacao_32194382132477",
+    "id": "f67c9f4e-0d8d-4737-a62b-93b65ed6fd79",
+    "accountName": "556125000519",
+    "token": "wt0tx3LB8O93YWX4xlva5jxEAK",
+    "templateName": "envio_atualizacao_876165511222",
     "metaParams": [],
     "wasDelivered": ""
   },
   {
-    "id": "052d0bb0-fa53-46d6-9700-805a33bd158a",
-    "accountName": "556225300771",
-    "token": "5dd8CppxAktBw0kDuPPH5BTHAK",
-    "templateName": "status_11291192155",
+    "id": "e440d602-8a70-49aa-8e8c-b02ddf27c600",
+    "accountName": "555125005875",
+    "token": "VMgIg62gEw5X2ikqpquJdokeAK",
+    "templateName": "status_651738712221",
     "metaParams": [],
     "wasDelivered": ""
   }
