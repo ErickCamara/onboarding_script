@@ -175,9 +175,40 @@ async function templateConfigPoolDatabase({ integrationId, name, newFrom, poolId
   }
 }
 
+// ==========================================================================
+// Leituras usadas pela etapa de "duplicar configuração": pegam a config
+// atual de uma integração já configurada (integration_work_around e todas
+// as linhas de template_config_pool) pra replicar em números novos.
+// ==========================================================================
+async function getIntegrationWorkAround({ integrationId }) {
+  const query = `SELECT * FROM public.integration_work_around WHERE integration_id = $1::uuid LIMIT 1;`;
+
+  try {
+    const { rows } = await whatsappConfig.query(query, [integrationId]);
+    return rows[0] || null;
+  } catch (error) {
+    console.error('Error in getIntegrationWorkAround function:', error);
+    throw new Error(`Error in getIntegrationWorkAround function: ${error.message}`);
+  }
+}
+
+async function getTemplateConfigPoolRows({ integrationId }) {
+  const query = `SELECT * FROM public.template_config_pool WHERE integration_id = $1::uuid;`;
+
+  try {
+    const { rows } = await whatsappConfig.query(query, [integrationId]);
+    return rows;
+  } catch (error) {
+    console.error('Error in getTemplateConfigPoolRows function:', error);
+    throw new Error(`Error in getTemplateConfigPoolRows function: ${error.message}`);
+  }
+}
+
 module.exports = {
   templateConfigDatabase,
   lakeDatabase,
   integrationWorkAroundDatabase,
-  templateConfigPoolDatabase
+  templateConfigPoolDatabase,
+  getIntegrationWorkAround,
+  getTemplateConfigPoolRows
 }

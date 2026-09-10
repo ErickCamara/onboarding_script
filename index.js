@@ -4,7 +4,7 @@ const fs = require("fs");
 const path = require("path");
 const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
 const { DynamoDBDocumentClient, PutCommand } = require('@aws-sdk/lib-dynamodb');
-const { templateConfigDatabase, lakeDatabase, integrationWorkAroundDatabase, templateConfigPoolDatabase } = require('./database/whatsappDb.js')
+const { templateConfigDatabase, lakeDatabase, integrationWorkAroundDatabase, templateConfigPoolDatabase, getIntegrationWorkAround, getTemplateConfigPoolRows } = require('./database/whatsappDb.js')
 const { SQSClient, SendMessageCommand } = require("@aws-sdk/client-sqs");
 const { randomizeOnce, randomizeAndUploadImage } = require('./imageRandomizer.js');
 
@@ -89,6 +89,33 @@ async function processIntegrationData(filePath) {
     return integrations;
   } catch (error) {
     console.error('Error reading or processing the file:', error);
+    return [];
+  }
+}
+
+// ==========================================================================
+// DUPLICAR CONFIGURAÇÃO — arquivo separado do dados.txt pra não confundir
+// os dois usos. 1ª linha = número já configurado (fonte); linhas seguintes
+// = números novos que devem replicar a config da fonte (integration_work_around
+// + todos os template_config_pool da fonte, e opcionalmente pool via Nyx).
+// Formato de cada linha: numero, externalId, type
+// ==========================================================================
+const DUPLICAR_FILE_PATH = './duplicar.txt';
+
+async function processDuplicarData(filePath) {
+  try {
+    const data = await fs.promises.readFile(path.resolve(filePath), 'utf8');
+    const lines = data.split('\n').map(l => l.trim()).filter(Boolean);
+    return lines.map(line => {
+      const parts = line.split(',').map(p => p.trim());
+      return {
+        number: parts[0],
+        externalId: parts[1],
+        type: parts[2],
+      };
+    });
+  } catch (error) {
+    console.error(`Erro ao ler ou processar ${filePath}:`, error);
     return [];
   }
 }
@@ -2037,6 +2064,171 @@ async function menuOnboardingCompleto(rl) {
   console.log('\nOnboarding completo finalizado. Veja o arquivo integracoes-criadas.json');
 }
 
+/**
+ * Duplica a configuração (integration_work_around + TODOS os
+ * template_config_pool, e opcionalmente o pool via Nyx) de um número já
+ * configurado (1ª linha de duplicar.txt) pra números novos (linhas
+ * seguintes) — evita refazer manualmente toda a configuração quando um
+ * número perde qualidade e precisa ser substituído.
+ */
+async function runDuplicarConfiguracao(rl) {
+  const linhas = await processDuplicarData(DUPLICAR_FILE_PATH);
+
+  if (linhas.length < 2) {
+    console.log(`\n${DUPLICAR_FILE_PATH} precisa ter pelo menos 2 linhas: a 1ª com o número já configurado (fonte) e as seguintes com os números novos.`);
+    return;
+  }
+
+  const [fonte, ...novos] = linhas;
+
+  console.log(`\n=== Buscando configuração de origem: ${fonte.number} ===`);
+  const fonteId = await checkIfExists(fonte.number);
+  if (!fonteId) {
+    console.log(`❌ Número fonte ${fonte.number} não encontrado como integração existente. Não é possível duplicar.`);
+    return;
+  }
+  fonte.integrationId = fonteId;
+
+  if (!['360', 'META', 'INFOBIP'].includes(fonte.type)) {
+    console.log(`❌ Tipo de broker desconhecido pra fonte ("${fonte.type}"). Confira a coluna type em ${DUPLICAR_FILE_PATH}.`);
+    return;
+  }
+
+  const fonteWorkAround = await getIntegrationWorkAround({ integrationId: fonteId });
+  const fontePools = await getTemplateConfigPoolRows({ integrationId: fonteId });
+
+  if (!fonteWorkAround && !fontePools.length) {
+    console.log('❌ Não encontrei integration_work_around nem template_config_pool para essa integração fonte. Nada para duplicar.');
+    return;
+  }
+
+  console.log(`\n=== Configuração encontrada para ${fonte.number} ===`);
+  console.log(`integration_work_around: ${fonteWorkAround ? `new_from=${fonteWorkAround.new_from}, block_response=${fonteWorkAround.block_response}` : 'nenhum'}`);
+  console.log(`template_config_pool: ${fontePools.length} linha(s) encontrada(s)`);
+  fontePools.forEach((p, i) => {
+    console.log(`  ${i + 1} - pool_id=${p.pool_id}, new_from=${p.new_from}, button_url=${p.button_url}, new_integration_id=${p.new_integration_id}, name=${p.name}`);
+  });
+
+  const confirmedSource = await confirmSummary(rl, `Replicar essa configuração para ${novos.length} número(s) novo(s)?`, {
+    numero_fonte: fonte.number,
+    work_around: fonteWorkAround ? 'sim' : 'não',
+    pools_encontrados: fontePools.length,
+  });
+  if (!confirmedSource) {
+    console.log('Duplicação cancelada.');
+    return;
+  }
+
+  // Pergunta uma única vez pro lote inteiro se deve também ir pro pool via
+  // Nyx, com a mesma capacidade pra todos os números novos.
+  let nyxCapacity = null;
+  if (fontePools.length) {
+    const wantsNyx = await askYesNo(rl, 'Deseja também adicionar esses números novos aos pools via Nyx?');
+    if (wantsNyx) {
+      const tamanhoDiario = await askNumber(rl, 'Valor do tamanhoDiario (aplicado a todos): ');
+      const onlyMassive = await askYesNo(rl, 'onlyMassive deve ser true?');
+      const onlyInsert = await askYesNo(rl, 'onlyInsert deve ser true?');
+      nyxCapacity = { tamanhoDiario, onlyMassive, onlyInsert };
+    }
+  }
+
+  const resultados = [];
+
+  for (const novo of novos) {
+    console.log(`\n=== Duplicando configuração para ${novo.number} ===`);
+    const linha = {
+      numero: novo.number,
+      integrationId: null,
+      criacao: 'erro',
+      workAround: '-',
+      poolsReplicados: 0,
+      poolsNyx: 0,
+    };
+    resultados.push(linha);
+
+    try {
+      const existingId = await checkIfExists(novo.number);
+      const integrationData = await createOrUpdateIntegration(novo, existingId);
+      novo.integrationId = integrationData.id;
+      linha.integrationId = integrationData.id;
+      linha.criacao = existingId ? 'atualizada' : 'criada';
+      console.log(`✅ ${novo.number}: integração ${existingId ? 'atualizada' : 'criada'} (id: ${integrationData.id}).`);
+    } catch (error) {
+      console.error(`❌ ${novo.number}: falha ao criar/editar integração.`, error?.response?.data || error.message);
+      continue;
+    }
+
+    if (fonteWorkAround) {
+      try {
+        await applyWorkAround(novo, {
+          blockResponse: fonteWorkAround.block_response,
+          newFrom: fonteWorkAround.new_from,
+        });
+        linha.workAround = 'sim';
+        console.log(`✅ integration_work_around replicado para ${novo.number}.`);
+      } catch (error) {
+        console.error(`❌ Falha ao replicar integration_work_around para ${novo.number}.`, error.message);
+        linha.workAround = 'erro';
+      }
+    }
+
+    for (const poolRow of fontePools) {
+      novo.templateName = poolRow.name;
+      try {
+        await addTemplateToPoolDatabase(novo, {
+          newFrom: poolRow.new_from,
+          poolId: poolRow.pool_id,
+          buttonUrl: poolRow.button_url,
+          newIntegrationId: poolRow.new_integration_id,
+        });
+        linha.poolsReplicados++;
+        console.log(`✅ template_config_pool replicado (pool_id=${poolRow.pool_id}) para ${novo.number}.`);
+      } catch (error) {
+        console.error(`❌ Falha ao replicar template_config_pool (pool_id=${poolRow.pool_id}) para ${novo.number}.`, error.message);
+      }
+
+      if (nyxCapacity) {
+        try {
+          await addIntegrationToNyxPool({
+            integrationId: novo.integrationId,
+            poolId: poolRow.pool_id,
+            broker: resolveBrokerForNyx(novo.type),
+            tamanhoDiario: nyxCapacity.tamanhoDiario,
+            onlyMassive: nyxCapacity.onlyMassive,
+            onlyInsert: nyxCapacity.onlyInsert,
+          });
+          linha.poolsNyx++;
+          console.log(`✅ ${novo.number} adicionado ao pool ${poolRow.pool_id} via Nyx.`);
+        } catch (error) {
+          console.error(`❌ Falha ao adicionar ${novo.number} ao pool ${poolRow.pool_id} via Nyx.`, error?.response?.data || error.message);
+        }
+      }
+    }
+  }
+
+  console.log('\n=== RESUMO DA DUPLICAÇÃO ===');
+  console.table(resultados);
+
+  fs.writeFileSync('duplicacoes-realizadas.json', JSON.stringify({
+    geradoEm: new Date().toISOString(),
+    fonte: fonte.number,
+    resultados,
+  }, null, 2));
+  console.log('\nResumo salvo em duplicacoes-realizadas.json');
+}
+
+async function menuDuplicarConfiguracao(rl) {
+  console.log('\n=== DUPLICAR CONFIGURAÇÃO ===');
+  console.log(`Lê ${DUPLICAR_FILE_PATH}: a 1ª linha é o número JÁ configurado (fonte), as seguintes são`);
+  console.log('os números novos que vão receber a mesma configuração (integration_work_around +');
+  console.log('todos os template_config_pool da fonte, e opcionalmente o pool via Nyx).');
+  console.log('Formato de cada linha: numero, externalId, type');
+
+  await runDuplicarConfiguracao(rl);
+
+  console.log('\nDuplicação de configuração finalizada.');
+}
+
 async function mainMenu() {
   const rl = createRL();
   let exit = false;
@@ -2047,6 +2239,7 @@ async function mainMenu() {
     console.log('2 - Onboarding integração');
     console.log('3 - Adicionar imagem');
     console.log('4 - Onboarding completo');
+    console.log('5 - Duplicar configuração');
     console.log('0 - Sair');
 
     const option = await ask(rl, '\nEscolha uma opção: ');
@@ -2063,6 +2256,9 @@ async function mainMenu() {
         break;
       case '4':
         await menuOnboardingCompleto(rl);
+        break;
+      case '5':
+        await menuDuplicarConfiguracao(rl);
         break;
       case '0':
         exit = true;
