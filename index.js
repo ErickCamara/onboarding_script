@@ -95,30 +95,17 @@ async function processIntegrationData(filePath) {
 
 // ==========================================================================
 // DUPLICAR CONFIGURAÇÃO — arquivo separado do dados.txt pra não confundir
-// os dois usos. 1ª linha = número já configurado (fonte); linhas seguintes
-// = números novos que devem replicar a config da fonte (integration_work_around
-// + todos os template_config_pool da fonte, e opcionalmente pool via Nyx).
-// Formato de cada linha: numero, externalId, type
+// os dois usos, mas no MESMO formato/padrão de colunas (lido com a mesma
+// processIntegrationData). 1ª linha = número já configurado (fonte); linhas
+// seguintes = números novos que devem replicar a config da fonte
+// (integration_work_around + todos os template_config_pool da fonte, e
+// opcionalmente pool via Nyx). Só number/externalId/type são usados da
+// fonte e dos números novos — os demais campos (templateName, token, lang,
+// hasParam) seguem no arquivo por padrão, mas não são usados nesse fluxo:
+// o nome do template e os dados do pool vêm de dentro do banco, copiados
+// da fonte.
 // ==========================================================================
 const DUPLICAR_FILE_PATH = './duplicar.txt';
-
-async function processDuplicarData(filePath) {
-  try {
-    const data = await fs.promises.readFile(path.resolve(filePath), 'utf8');
-    const lines = data.split('\n').map(l => l.trim()).filter(Boolean);
-    return lines.map(line => {
-      const parts = line.split(',').map(p => p.trim());
-      return {
-        number: parts[0],
-        externalId: parts[1],
-        type: parts[2],
-      };
-    });
-  } catch (error) {
-    console.error(`Erro ao ler ou processar ${filePath}:`, error);
-    return [];
-  }
-}
 
 const tableName = "whatsapp.service.provider.config";
 
@@ -2072,7 +2059,7 @@ async function menuOnboardingCompleto(rl) {
  * número perde qualidade e precisa ser substituído.
  */
 async function runDuplicarConfiguracao(rl) {
-  const linhas = await processDuplicarData(DUPLICAR_FILE_PATH);
+  const linhas = await processIntegrationData(DUPLICAR_FILE_PATH);
 
   if (linhas.length < 2) {
     console.log(`\n${DUPLICAR_FILE_PATH} precisa ter pelo menos 2 linhas: a 1ª com o número já configurado (fonte) e as seguintes com os números novos.`);
@@ -2219,10 +2206,11 @@ async function runDuplicarConfiguracao(rl) {
 
 async function menuDuplicarConfiguracao(rl) {
   console.log('\n=== DUPLICAR CONFIGURAÇÃO ===');
-  console.log(`Lê ${DUPLICAR_FILE_PATH}: a 1ª linha é o número JÁ configurado (fonte), as seguintes são`);
-  console.log('os números novos que vão receber a mesma configuração (integration_work_around +');
-  console.log('todos os template_config_pool da fonte, e opcionalmente o pool via Nyx).');
-  console.log('Formato de cada linha: numero, externalId, type');
+  console.log(`Lê ${DUPLICAR_FILE_PATH} no MESMO formato do dados.txt. A 1ª linha é o número JÁ`);
+  console.log('configurado (fonte), as seguintes são os números novos que vão receber a mesma');
+  console.log('configuração (integration_work_around + todos os template_config_pool da fonte, e');
+  console.log('opcionalmente o pool via Nyx). O nome do template e os dados do pool vêm do banco');
+  console.log('(copiados da fonte) — não precisa preencher isso certo no arquivo.');
 
   await runDuplicarConfiguracao(rl);
 

@@ -1,17 +1,17 @@
 [
   {
-    "id": "6eb94ddd-97c9-4b86-9c34-10634485416a",
-    "accountName": "551152900438",
+    "id": "78a21d1d-18e9-4cc9-92e6-39e95a2c90ed",
+    "accountName": "551153430910",
     "token": "null",
-    "templateName": "retiradatarde_mistoquente_inhauma",
+    "templateName": "999766663219_order_progress",
     "metaParams": [],
     "wasDelivered": ""
   },
   {
-    "id": "2b66fa4a-9b23-4c31-a643-59e2b199896e",
-    "accountName": "555125000243",
-    "token": "555125000243",
-    "templateName": "teste_02",
+    "id": "33ef02fe-ef24-4b9f-a365-159fd57bd0dc",
+    "accountName": "551153430908",
+    "token": "null",
+    "templateName": "1155446633250_delivery_progress",
     "metaParams": [],
     "wasDelivered": ""
   }
