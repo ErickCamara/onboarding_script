@@ -1672,23 +1672,27 @@ async function selecionarIntegracaoDoDados(rl) {
   }
 
   console.log('\n=== INTEGRAÇÕES DISPONÍVEIS (dados.txt) ===');
+  console.log('0 - Testar TODAS de uma vez (sem precisar escolher uma a uma)');
   integrations.forEach((integ, index) => {
     console.log(`${index + 1} - ${integ.number} | template: ${integ.templateName} | integrationId: ${integ.integrationId}`);
   });
 
-  let selecionada = null;
-  while (!selecionada) {
-    const raw = await ask(rl, '\nEscolha o número da integração: ');
-    const idx = parseInt(raw.replace(/\D/g, ''), 10) - 1;
+  // Retorna a integração escolhida, ou o array completo (só as linhas
+  // válidas) se o usuário escolher a opção 0 (testar todas).
+  while (true) {
+    const raw = await ask(rl, '\nEscolha o número da integração (0 = todas): ');
+    const digits = raw.replace(/\D/g, '');
 
-    if (Number.isInteger(idx) && integrations[idx]) {
-      selecionada = integrations[idx];
-    } else {
-      console.log(`Opção inválida ("${raw}"). Tente novamente.`);
+    if (digits === '0') {
+      return integrations.filter(integ => integ.number && integ.integrationId);
     }
-  }
 
-  return selecionada;
+    const idx = parseInt(digits, 10) - 1;
+    if (Number.isInteger(idx) && integrations[idx]) {
+      return integrations[idx];
+    }
+    console.log(`Opção inválida ("${raw}"). Tente novamente.`);
+  }
 }
 
 /**
@@ -1797,8 +1801,8 @@ async function escolherImagemLocal(rl) {
 }
 
 async function menuTestarIntegracao(rl) {
-  const integracao = await selecionarIntegracaoDoDados(rl);
-  if (!integracao) return;
+  const selecao = await selecionarIntegracaoDoDados(rl);
+  if (!selecao) return;
 
   const bodyType = await chooseBodyType(rl);
 
@@ -1807,6 +1811,26 @@ async function menuTestarIntegracao(rl) {
     addTemplateConfig = false;
   }
 
+  if (Array.isArray(selecao)) {
+    if (!selecao.length) {
+      console.log('\nNenhuma integração válida encontrada em ./dados.txt.');
+      return;
+    }
+
+    console.log(`\nTestando ${selecao.length} integração(ões) (${bodyType}), sem pedir mais nada...`);
+    for (const [index, integ] of selecao.entries()) {
+      console.log(`\n[${index + 1}/${selecao.length}] Enviando teste para ${integ.number} (integrationId: ${integ.integrationId})...`);
+      try {
+        await sendMessage(integ.integrationId, integ.templateName, integ.hasParam, bodyType);
+      } catch (error) {
+        console.error(`❌ Falha no teste de ${integ.number}:`, error?.response?.data || error.message);
+      }
+    }
+    console.log('\nTeste de todas as integrações concluído.');
+    return;
+  }
+
+  const integracao = selecao;
   console.log(`\nEnviando teste (${bodyType}) para ${integracao.number} (integrationId: ${integracao.integrationId})...`);
   await sendMessage(integracao.integrationId, integracao.templateName, integracao.hasParam, bodyType);
   console.log('Teste concluído.');

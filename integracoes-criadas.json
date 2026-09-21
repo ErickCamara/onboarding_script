@@ -1,17 +1,17 @@
 [
   {
-    "id": "78a21d1d-18e9-4cc9-92e6-39e95a2c90ed",
-    "accountName": "551153430910",
+    "id": "7eec41af-04cc-465b-8f66-2b94822c4dfc",
+    "accountName": "555128300937",
     "token": "null",
-    "templateName": "999766663219_order_progress",
+    "templateName": "9976544434444_delivery_progress",
     "metaParams": [],
     "wasDelivered": ""
   },
   {
-    "id": "33ef02fe-ef24-4b9f-a365-159fd57bd0dc",
-    "accountName": "551153430908",
+    "id": "2b471ce6-1ff9-409d-80e4-db7915fbc16c",
+    "accountName": "555128300936",
     "token": "null",
-    "templateName": "1155446633250_delivery_progress",
+    "templateName": "6756523225652_attempt_notice",
     "metaParams": [],
     "wasDelivered": ""
   }
