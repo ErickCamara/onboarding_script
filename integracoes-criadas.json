@@ -1,17 +1,17 @@
 [
   {
-    "id": "7eec41af-04cc-465b-8f66-2b94822c4dfc",
-    "accountName": "555128300937",
+    "id": "9d32fb5b-cdbb-4603-88fd-56afc4a0d635",
+    "accountName": "553525000371",
     "token": "null",
-    "templateName": "9976544434444_delivery_progress",
+    "templateName": "booking_confirmation_1116753423789",
     "metaParams": [],
     "wasDelivered": ""
   },
   {
-    "id": "2b471ce6-1ff9-409d-80e4-db7915fbc16c",
-    "accountName": "555128300936",
+    "id": "a53adf9a-2934-4265-8f56-578d457e2b60",
+    "accountName": "553525000372",
     "token": "null",
-    "templateName": "6756523225652_attempt_notice",
+    "templateName": "service_confirmation_67623425646",
     "metaParams": [],
     "wasDelivered": ""
   }

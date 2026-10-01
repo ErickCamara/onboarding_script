@@ -889,17 +889,21 @@ async function phaseCreateOrUpdateAll(integrations) {
  * Pergunta, pra UM número, se quer configurar template_config_pool agora,
  * pular este número, ou pular todos os restantes de uma vez.
  */
-async function askNumberScopeChoice(rl, number, actionLabel = 'Configurar template_config_pool') {
+async function askNumberScopeChoice(rl, number, actionLabel = 'Configurar template_config_pool', { allowReplicate = false } = {}) {
   while (true) {
     console.log(`\nNúmero: ${number}`);
     console.log(`1 - ${actionLabel} para este número`);
     console.log('2 - Pular este número');
     console.log('3 - Pular todos os restantes');
+    if (allowReplicate) {
+      console.log('4 - Replicar a configuração do número anterior');
+    }
 
     const raw = await ask(rl, '\nEscolha uma opção: ');
     if (raw === '1') return 'configure';
     if (raw === '2') return 'skip';
     if (raw === '3') return 'skip-rest';
+    if (allowReplicate && raw === '4') return 'replicate';
     console.log(`Opção inválida ("${raw}"). Tente novamente.`);
   }
 }
@@ -912,9 +916,17 @@ async function askNumberScopeChoice(rl, number, actionLabel = 'Configurar templa
  */
 async function collectTemplateConfigPoolForAllNumbers(rl, ready, summary) {
   const poolConfigsCollected = [];
+  // Guarda os poolConfig(s) do último número que foi de fato configurado
+  // (não um que só pulou), pra permitir "replicar" sem reperguntar os
+  // campos. Sobrevive a números pulados no meio — "anterior" aqui quer
+  // dizer o último configurado, não necessariamente o índice imediatamente
+  // antes.
+  let lastConfiguredPools = null;
 
   for (const integration of ready) {
-    const choice = await askNumberScopeChoice(rl, integration.number);
+    const choice = await askNumberScopeChoice(rl, integration.number, 'Configurar template_config_pool', {
+      allowReplicate: !!(lastConfiguredPools && lastConfiguredPools.length),
+    });
 
     if (choice === 'skip-rest') {
       console.log('Pulando template_config_pool para todos os números restantes.');
@@ -926,20 +938,45 @@ async function collectTemplateConfigPoolForAllNumbers(rl, ready, summary) {
     }
 
     let poolsForThisNumber = 0;
-    let wantsMore = true;
-    while (wantsMore) {
-      const poolConfig = await askTemplateConfigPoolSharedFields(rl);
 
-      try {
-        await addTemplateToPoolDatabase(integration, poolConfig);
-        console.log(`✅ Template cadastrado no template_config_pool para ${integration.number}.`);
-        poolConfigsCollected.push({ integration, poolConfig, insertStatus: 'ok' });
-        poolsForThisNumber++;
-      } catch (error) {
-        console.error(`❌ Falha ao cadastrar template_config_pool para ${integration.number}.`, error.message);
+    if (choice === 'replicate') {
+      console.log(`\nReplicando ${lastConfiguredPools.length} configuração(ões) de template_config_pool para ${integration.number}:`);
+      lastConfiguredPools.forEach((poolConfig, i) => {
+        console.log(`  ${i + 1} - pool_id=${poolConfig.poolId}, new_from=${poolConfig.newFrom}, button_url=${poolConfig.buttonUrl}, new_integration_id=${poolConfig.newIntegrationId}`);
+      });
+
+      for (const poolConfig of lastConfiguredPools) {
+        try {
+          await addTemplateToPoolDatabase(integration, poolConfig);
+          console.log(`✅ Template cadastrado no template_config_pool para ${integration.number} (replicado).`);
+          poolConfigsCollected.push({ integration, poolConfig, insertStatus: 'ok (replicado)' });
+          poolsForThisNumber++;
+        } catch (error) {
+          console.error(`❌ Falha ao replicar template_config_pool para ${integration.number}.`, error.message);
+        }
+      }
+    } else {
+      const poolConfigsForThisNumber = [];
+      let wantsMore = true;
+      while (wantsMore) {
+        const poolConfig = await askTemplateConfigPoolSharedFields(rl);
+
+        try {
+          await addTemplateToPoolDatabase(integration, poolConfig);
+          console.log(`✅ Template cadastrado no template_config_pool para ${integration.number}.`);
+          poolConfigsCollected.push({ integration, poolConfig, insertStatus: 'ok' });
+          poolConfigsForThisNumber.push(poolConfig);
+          poolsForThisNumber++;
+        } catch (error) {
+          console.error(`❌ Falha ao cadastrar template_config_pool para ${integration.number}.`, error.message);
+        }
+
+        wantsMore = await askYesNo(rl, `Deseja cadastrar mais um template_config_pool para ${integration.number}?`);
       }
 
-      wantsMore = await askYesNo(rl, `Deseja cadastrar mais um template_config_pool para ${integration.number}?`);
+      if (poolConfigsForThisNumber.length) {
+        lastConfiguredPools = poolConfigsForThisNumber;
+      }
     }
 
     const summaryEntry = summary.find(s => s.number === integration.number);

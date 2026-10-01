@@ -1,22 +1,14 @@
 {
-  "geradoEm": "2026-09-12T12:50:21.700Z",
-  "fonte": "551131630439",
+  "geradoEm": "2026-09-25T19:55:52.041Z",
+  "fonte": "5511952130279",
   "resultados": [
     {
-      "numero": "551152270568",
-      "integrationId": "78ad36ce-ccf4-4066-ae2a-18e9248d9940",
-      "criacao": "atualizada",
-      "workAround": "sim",
-      "poolsReplicados": 26,
-      "poolsNyx": 26
-    },
-    {
-      "numero": "551152270570",
-      "integrationId": "73055e1a-fc0f-46c1-81a1-ae6a892193ef",
-      "criacao": "atualizada",
-      "workAround": "sim",
-      "poolsReplicados": 26,
-      "poolsNyx": 26
+      "numero": "551925700358",
+      "integrationId": null,
+      "criacao": "erro",
+      "workAround": "-",
+      "poolsReplicados": 0,
+      "poolsNyx": 0
     }
   ]
 }
