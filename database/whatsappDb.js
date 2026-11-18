@@ -29,6 +29,21 @@ const lake = new Pool({
   }
 });
 
+// Banco "pool": mesmo servidor do lake, outro database. Só é lido aqui
+// (tamanho diário de uma integração em cada pool). O usuário do lake pode
+// não ter acesso a esse banco: nesse caso defina POOL_DB_USERNAME e
+// POOL_DB_PASSWORD no .env (um usuário com SELECT em pool_integration).
+const poolDb = new Pool({
+  host: process.env.POOL_DB_HOST || process.env.LAKE_DB_HOST,
+  port: process.env.POOL_DB_PORT || process.env.LAKE_DB_PORT,
+  database: process.env.POOL_DB_DATABASE || 'pool',
+  user: process.env.POOL_DB_USERNAME || process.env.LAKE_DB_USERNAME,
+  password: process.env.POOL_DB_PASSWORD || process.env.LAKE_DB_PASSWORD,
+  ssl: {
+    rejectUnauthorized: false
+  }
+});
+
 // ==========================================================================
 // template_config
 // Antes replicada nas 3 bases (META / 360 / INFOBIP), cada uma com sua
@@ -204,7 +219,27 @@ async function getTemplateConfigPoolRows({ integrationId }) {
   }
 }
 
+// Tamanho diário (daily_value) de uma integração em cada pool onde ela está
+// cadastrada (banco pool, tabela pool_integration) — usado pelo "duplicar
+// configuração" pra copiar o tamanho diário do número base.
+async function getPoolIntegrationDailyValues({ integrationId }) {
+  const query = `
+    SELECT pool_id, daily_value
+    FROM public.pool_integration
+    WHERE integration_id = $1::uuid;
+  `;
+
+  try {
+    const { rows } = await poolDb.query(query, [integrationId]);
+    return rows;
+  } catch (error) {
+    console.error('Error in getPoolIntegrationDailyValues function:', error);
+    throw new Error(`Error in getPoolIntegrationDailyValues function: ${error.message}`);
+  }
+}
+
 module.exports = {
+  getPoolIntegrationDailyValues,
   templateConfigDatabase,
   lakeDatabase,
   integrationWorkAroundDatabase,

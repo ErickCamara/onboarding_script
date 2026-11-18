@@ -1,14 +1,16 @@
 {
-  "geradoEm": "2026-09-25T19:55:52.041Z",
-  "fonte": "5511952130279",
+  "geradoEm": "2026-11-18T12:08:29.615Z",
+  "fonte": "5516910697207",
   "resultados": [
     {
-      "numero": "551925700358",
-      "integrationId": null,
-      "criacao": "erro",
-      "workAround": "-",
-      "poolsReplicados": 0,
-      "poolsNyx": 0
+      "numero": "5516910696280",
+      "integrationId": "01f2adee-79d2-465a-a835-8a973de1a3a6",
+      "criacao": "atualizada",
+      "teste": "-",
+      "workAround": "sim",
+      "poolsReplicados": 15,
+      "poolsNyx": 5,
+      "imagem": "ok"
     }
   ]
 }

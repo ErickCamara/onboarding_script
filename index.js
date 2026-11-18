@@ -4,7 +4,7 @@ const fs = require("fs");
 const path = require("path");
 const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
 const { DynamoDBDocumentClient, PutCommand } = require('@aws-sdk/lib-dynamodb');
-const { templateConfigDatabase, lakeDatabase, integrationWorkAroundDatabase, templateConfigPoolDatabase, getIntegrationWorkAround, getTemplateConfigPoolRows } = require('./database/whatsappDb.js')
+const { templateConfigDatabase, lakeDatabase, integrationWorkAroundDatabase, templateConfigPoolDatabase, getIntegrationWorkAround, getTemplateConfigPoolRows, getPoolIntegrationDailyValues } = require('./database/whatsappDb.js')
 const { SQSClient, SendMessageCommand } = require("@aws-sdk/client-sqs");
 const { randomizeOnce, randomizeAndUploadImage } = require('./imageRandomizer.js');
 
@@ -82,7 +82,8 @@ async function processIntegrationData(filePath) {
         token: parts[8],
         type: parts[4],
         lang: parts[9],
-        hasParam: parts[10] ? parts[10].trim().toLowerCase() : "yes"
+        hasParam: parts[10] ? parts[10].trim().toLowerCase() : "yes",
+        appId: parts[parts.length - 1].trim()
       };
     });
     console.log('##### integrations: ', integrations);
@@ -134,7 +135,6 @@ const integrationsCreated = [];
 
 let addTemplateConfig = false;
 const wantsToWriteToDynamo = true;
-const wantToTest = true;
 
 const TEST_BODY_TYPES = {
   BUTTON_URL_VAR: 'BUTTON_URL_VAR',
@@ -181,7 +181,7 @@ function requiresTemplateConfigDisabled(bodyType) {
   return bodyType === TEST_BODY_TYPES.BUTTON_URL_VAR || bodyType === TEST_BODY_TYPES.BUTTON_URL_VAR_BODY_FIXED;
 }
 
-async function createIntegration(bodyType = testBodyType) {
+async function createIntegration(bodyType = testBodyType, runTest = true) {
   const integrations = await processIntegrationData('./dados.txt');
 
   for (let integration of integrations) {
@@ -228,6 +228,12 @@ async function createIntegration(bodyType = testBodyType) {
         console.log(`Integração ${integration.number} é do tipo INFOBIP — pulando criação e indo direto para teste...`);
       }
 
+      // Teste de template logo após criar/editar, antes de qualquer config.
+      let wasDelivered = ""
+      if (runTest) {
+        wasDelivered = await sendTemplateTest(integration, bodyType);
+      }
+
       if (['360', 'META', 'INFOBIP'].includes(integration.type) && addTemplateConfig) {
         const language = integration.type === '360' ? null : (integration.lang || null);
         try {
@@ -247,17 +253,6 @@ async function createIntegration(bodyType = testBodyType) {
         await writeToDynamoDB(response.data.data.id, integration.token).then(() => {
           console.log("Integrações processadas e dados inseridos no DynamoDB");
         });
-      }
-
-      let wasDelivered = ""
-      if (wantToTest) {
-        if (integration.lang === 'en') {
-          wasDelivered = await sendToSQS(response.data.data.id, "TESTE_WEBHOOK_EN");
-        } else if (integration.lang === 'pt') {
-          wasDelivered = await sendToSQS(response.data.data.id, "TESTE_WEBHOOK_PT");
-        } else {
-          wasDelivered = await sendMessage(integration.integrationId, integration.templateName, integration.hasParam, bodyType)
-        }
       }
 
       const dataToSave = {
@@ -386,7 +381,20 @@ function sleep(milliseconds) {
   return new Promise(resolve => setTimeout(resolve, milliseconds));
 }
 
-const CREDENCIAIS_FILE_PATH = './credenciais.txt';
+/**
+ * Dispara o teste de template pra UMA integração (SQS quando lang é en/pt,
+ * senão send-template). Compartilhado pelo onboarding (padrão e completo) e
+ * pelo "duplicar configuração".
+ */
+async function sendTemplateTest(integration, bodyType) {
+  if (integration.lang === 'en') {
+    return sendToSQS(integration.integrationId, "TESTE_WEBHOOK_EN");
+  }
+  if (integration.lang === 'pt') {
+    return sendToSQS(integration.integrationId, "TESTE_WEBHOOK_PT");
+  }
+  return sendMessage(integration.integrationId, integration.templateName, integration.hasParam, bodyType);
+}
 
 const INFOBIP_BASE_URL = 'https://2yjjdw.api-us.infobip.com';
 const INFOBIP_API_KEY = process.env.INFOBIP_API_KEY || '';
@@ -418,35 +426,45 @@ function readImagensLocais(filePath) {
     .filter(Boolean);
 }
 
-function parseCredentialLine(rawLine) {
-  const line = rawLine.trim();
-  if (!line) return null;
+const isBlankField = (value) => !value || value.trim() === '' || value.trim().toLowerCase() === 'null';
 
-  const parts = line.split(',').map(p => p.trim()).filter(p => p !== '');
+/**
+ * Monta a credencial de imagem direto da linha do dados.txt/duplicar.txt:
+ *   INFOBIP: 1º campo (número = sender)
+ *   360:     2º campo (profileCode), 5º (type), 9º (token)
+ *   META:    igual ao 360 + último campo (app_id)
+ * Retorna null (com aviso) se faltar algum campo ou o type for desconhecido.
+ */
+function credencialFromIntegration(integration) {
+  const number = integration.number?.trim();
 
-  if (parts.length === 1) {
-    return { broker: 'INFOBIP', sender: parts[0] };
-  }
-  if (parts.length === 3 && parts[1].toUpperCase() === '360') {
-    return { broker: '360', profileCode: parts[0], token: parts[2] };
-  }
-  if (parts.length === 4 && parts[1].toUpperCase() === 'META') {
-    return { broker: 'META', profileCode: parts[0], token: parts[2], appId: parts[3] };
+  if (integration.type === 'INFOBIP') {
+    if (isBlankField(number)) return null;
+    return { broker: 'INFOBIP', sender: number, number };
   }
 
-  console.log(`Linha em formato não reconhecido, ignorando: "${rawLine}"`);
+  if (integration.type === '360' || integration.type === 'META') {
+    const missing = [];
+    if (isBlankField(integration.externalId)) missing.push('profileCode (2º campo)');
+    if (isBlankField(integration.token)) missing.push('token (9º campo)');
+    if (integration.type === 'META' && isBlankField(integration.appId)) missing.push('app_id (último campo)');
+
+    if (missing.length) {
+      console.log(`⚠️ ${number}: faltam no arquivo: ${missing.join(', ')}. Pulando imagem.`);
+      return null;
+    }
+
+    return {
+      broker: integration.type,
+      profileCode: integration.externalId.trim(),
+      token: integration.token.trim(),
+      ...(integration.type === 'META' ? { appId: integration.appId } : {}),
+      number,
+    };
+  }
+
+  console.log(`⚠️ ${number}: type desconhecido ("${integration.type}"), pulando imagem.`);
   return null;
-}
-
-function readCredenciais(filePath) {
-  if (!fs.existsSync(filePath)) return [];
-  return fs.readFileSync(filePath, 'utf8')
-    .split('\n')
-    .map(rawLine => {
-      const parsed = parseCredentialLine(rawLine);
-      return parsed ? { ...parsed, rawLine } : null;
-    })
-    .filter(Boolean);
 }
 
 async function upload360Image(imageBuffer, token) {
@@ -536,8 +554,9 @@ async function downloadImageBuffer(url) {
 // ==========================================================================
 // ONBOARDING COMPLETO (em fases sequenciais, cada uma passando por TODOS
 // os números do dados.txt antes de seguir pra próxima)
-// Fases: 1) criar/editar todas as integrações (automática) -> 2) escolhe o
-// MODO: massivo (mesma config coletada 1x e aplicada a vários números do
+// Fases: 1) criar/editar todas as integrações (automática) -> 2) teste de
+// template (opcional, pergunta sim/não; roda ANTES de qualquer configuração)
+// -> 3) escolhe o MODO: massivo (mesma config coletada 1x e aplicada a vários números do
 // mesmo pool, com resumo pra aprovação e opção de excluir números — bom
 // pra "várias integrações pro mesmo pool") ou padrão (número a número).
 //
@@ -545,16 +564,15 @@ async function downloadImageBuffer(url) {
 // todas) OU template_config_pool (número a número, com suporte a múltiplos
 // pools por número e opção de pular o resto), mutuamente exclusivos ->
 // integration_work_around (por integração) -> adição de imagem (por
-// integração) -> teste de envio (valida ANTES de colocar no pool) -> só
-// com bodyType BODY_VAR: pergunta se quer adicionar direto ao pool via Nyx
+// integração) -> só com bodyType BODY_VAR: pergunta se quer adicionar direto ao pool via Nyx
 // sem cadastrar template_config_pool (pede confirmação do link do
 // encurtador + pool_id) -> pool via Nyx (onlyMassive/onlyInsert forçados
 // true quando a integração está em mais de um pool).
 //
 // No modo MASSIVO (runMassBatchConfig): coleta template/work_around/imagem/
 // capacidade do pool via Nyx UMA VEZ, mostra resumo consolidado, deixa
-// excluir números, aplica a config nos números incluídos -> teste de envio
-// -> só então chama a Nyx com a capacidade já coletada (applyMassNyxPool).
+// excluir números, aplica a config nos números incluídos -> só então chama
+// a Nyx com a capacidade já coletada (applyMassNyxPool).
 //
 // Em ambos os modos, depois: DynamoDB -> tabela resumo (console + JSON).
 // Falha numa fase pra uma integração específica não impede as próximas
@@ -868,17 +886,28 @@ async function phaseCreateOrUpdateAll(integrations) {
     };
     summary.push(summaryEntry);
 
+    let step = 'checkIfExists (GET)';
     try {
       const existingId = await checkIfExists(integration.number);
+      console.log(`Número ${integration.number}: ${existingId ? 'já existe (id: ' + existingId + ')' : 'não existe'}.`);
+
+      step = `createOrUpdateIntegration (${existingId ? 'PUT' : 'POST'})`;
       const integrationData = await createOrUpdateIntegration(integration, existingId);
+
+      step = 'processar resposta da API';
       integration.integrationId = integrationData.id;
       integration.accountName = integrationData.accountName;
       summaryEntry.integrationId = integrationData.id;
       summaryEntry.criacao = existingId ? 'atualizada' : 'criada';
       ready.push(integration);
-      console.log(`✅ ${integration.number}: integração ${existingId ? 'atualizada' : 'criada'} (id: ${integrationData.id}).`);
+      console.log(`✅ ${integration.number}: integração ${existingId ? 'atualizada' : 'criada'} (id: ${integrationData.id}, accountName: ${integrationData.accountName}).`);
     } catch (error) {
-      console.error(`❌ ${integration.number}: falha ao checar/criar/editar integração.`, error?.response?.data || error.message);
+      const req = error?.config;
+      console.error(
+        `❌ ${integration.number}: falha na etapa [${step}]`,
+        req ? `${req.method?.toUpperCase()} ${req.url} -> HTTP ${error.response?.status ?? 'sem resposta'}` : '',
+        error?.response?.data || error.message
+      );
     }
   }
 
@@ -1249,13 +1278,6 @@ async function runMassBatchConfig(rl, ready, disallowTemplateConfig, summary) {
 
     // 3. imagem
     const wantsImage = await askYesNo(rl, 'Deseja atualizar a imagem de perfil dessas integrações?');
-    let imageReady = false;
-    if (wantsImage) {
-      imageReady = await confirmCredenciaisFileReady(rl);
-      if (!imageReady) {
-        console.log('A etapa de imagem ficará desativada nesta rodada (credenciais.txt não confirmado).');
-      }
-    }
 
     // 4. capacidade do pool via Nyx — independente da estratégia de template.
     // Se for template_config_pool, reaproveita o pool_id já coletado ali;
@@ -1286,7 +1308,7 @@ async function runMassBatchConfig(rl, ready, disallowTemplateConfig, summary) {
         new_integration_id: templatePoolConfig.newIntegrationId,
       } : {}),
       work_around: workAroundConfig ? `block_response=${workAroundConfig.blockResponse}, new_from=${workAroundConfig.newFrom}` : 'não',
-      imagem: wantsImage ? (imageReady ? 'sim' : 'sim, mas será pulada (credenciais.txt não confirmado)') : 'não',
+      imagem: wantsImage ? 'sim (credenciais vindas do dados.txt)' : 'não',
       pool_via_nyx: nyxCapacity
         ? `pool_id=${nyxPoolId}, tamanhoDiario=${nyxCapacity.tamanhoDiario}, onlyMassive=${nyxCapacity.onlyMassive}, onlyInsert=${nyxCapacity.onlyInsert}`
         : 'não',
@@ -1326,11 +1348,7 @@ async function runMassBatchConfig(rl, ready, disallowTemplateConfig, summary) {
     }
 
     // 7. cache do asset de imagem por broker — preenchido sob demanda no
-    // passo 8, na primeira vez que aparecer uma credencial de cada broker.
-    // Não dá pra decidir isso adiantado pelo "type" do dados.txt: o broker
-    // que importa é o da CREDENCIAL de credenciais.txt que acaba sendo
-    // usada (pode ser diferente do type, ex: número marcado como 360 no
-    // dados.txt mas a credencial de imagem disponível é Infobip).
+    // passo 8, na primeira vez que aparecer cada broker (type do dados.txt).
     const imageAssetByBroker = {};
 
     // 8. aplicar pra cada número incluído
@@ -1394,44 +1412,19 @@ async function runMassBatchConfig(rl, ready, disallowTemplateConfig, summary) {
         summaryEntry.workAround = 'não';
       }
 
-      if (wantsImage && imageReady) {
+      if (wantsImage) {
         try {
-          const credencial = await selecionarCredencialDeImagem(rl, integration);
+          const credencial = credencialFromIntegration(integration);
           if (!credencial) {
-            console.log(`Nenhuma credencial selecionada para ${integration.number}, pulando imagem.`);
+            console.log(`Dados de imagem incompletos para ${integration.number}, pulando imagem.`);
             if (summaryEntry) summaryEntry.imagem = 'não';
-            imageResults.push({ numero: integration.number, credencial: '-', md5: '-', status: 'sem credencial' });
+            imageResults.push({ numero: integration.number, credencial: '-', md5: '-', status: 'dados incompletos' });
           } else {
-            if (!imageAssetByBroker[credencial.broker]) {
-              console.log(`\nEscolha a imagem a usar para credenciais do broker ${credencial.broker}:`);
-              if (credencial.broker === 'INFOBIP') {
-                const logoUrl = await escolherLogoInfobip(rl);
-                imageAssetByBroker[credencial.broker] = { type: 'url', value: logoUrl };
-              } else {
-                const imagePath = await escolherImagemLocal(rl);
-                if (imagePath) imageAssetByBroker[credencial.broker] = { type: 'path', value: imagePath };
-              }
-            }
-
-            const asset = imageAssetByBroker[credencial.broker];
-            if (!asset) {
-              console.log(`Nenhuma imagem definida para o broker ${credencial.broker}, pulando.`);
-              if (summaryEntry) summaryEntry.imagem = 'não';
-              imageResults.push({ numero: integration.number, credencial: credencial.sender || credencial.profileCode, md5: '-', status: 'sem asset' });
-            } else {
-              // confirm: false — a aprovação já aconteceu uma vez no resumo
-              // consolidado (passo 5), não interrompe de novo por número.
-              const result = await applyProfileImageWithAsset(rl, credencial, asset, { confirm: false });
-              const identificador = credencial.sender || credencial.profileCode;
-              if (result.success) {
-                removeUsedCredencialFromFile(credencial);
-                if (summaryEntry) summaryEntry.imagem = 'sim';
-                imageResults.push({ numero: integration.number, credencial: identificador, md5: result.md5, status: 'ok' });
-              } else {
-                if (summaryEntry) summaryEntry.imagem = 'erro';
-                imageResults.push({ numero: integration.number, credencial: identificador, md5: '-', status: 'erro' });
-              }
-            }
+            // Aprovação já aconteceu uma vez no resumo consolidado (passo 5),
+            // não interrompe de novo por número.
+            const result = await applyImageWithCachedAsset(rl, credencial, imageAssetByBroker);
+            if (summaryEntry) summaryEntry.imagem = imageStatusLabel(result.status);
+            imageResults.push({ numero: integration.number, credencial: result.identificador, md5: result.md5, status: result.status });
           }
         } catch (error) {
           console.error(`❌ Falha na atualização de imagem para ${integration.number}.`, error.message);
@@ -1509,26 +1502,19 @@ async function phaseDynamo(ready, summary) {
 }
 
 /**
- * Fase 7: dispara o teste de envio (SQS ou sendMessage), automática,
- * controlada por wantToTest.
+ * Teste de envio de template (SQS ou sendMessage). É a PRIMEIRA etapa depois
+ * de criar/editar as integrações; `runTest` vem da pergunta ao usuário.
  */
-async function phaseTest(ready, bodyType, summary) {
-  console.log('\n=== ETAPA 5: teste de envio ===');
+async function phaseTest(ready, bodyType, summary, runTest) {
+  console.log('\n=== ETAPA 2: teste de template ===');
   for (const integration of ready) {
     const summaryEntry = summary.find(s => s.number === integration.number);
-    if (!wantToTest) {
+    if (!runTest) {
       if (summaryEntry) summaryEntry.teste = 'pulado';
       continue;
     }
     try {
-      let wasDelivered;
-      if (integration.lang === 'en') {
-        wasDelivered = await sendToSQS(integration.integrationId, "TESTE_WEBHOOK_EN");
-      } else if (integration.lang === 'pt') {
-        wasDelivered = await sendToSQS(integration.integrationId, "TESTE_WEBHOOK_PT");
-      } else {
-        wasDelivered = await sendMessage(integration.integrationId, integration.templateName, integration.hasParam, bodyType);
-      }
+      const wasDelivered = await sendTemplateTest(integration, bodyType);
       integration.wasDelivered = wasDelivered;
       console.log(`✅ ${integration.number}: teste de envio disparado.`);
       if (summaryEntry) summaryEntry.teste = 'disparado';
@@ -1612,6 +1598,9 @@ async function runOnboardingCompleto(rl, bodyType = testBodyType) {
     return summary;
   }
 
+  const runTest = await askYesNo(rl, 'Deseja realizar o teste de template agora, antes de configurar?');
+  await phaseTest(ready, bodyType, summary, runTest);
+
   const mode = await askOnboardingMode(rl);
 
   let poolConfigsCollected = [];
@@ -1627,8 +1616,6 @@ async function runOnboardingCompleto(rl, bodyType = testBodyType) {
     await phaseWorkAround(rl, ready, summary);
     await phaseImage(rl, ready, summary);
   }
-
-  await phaseTest(ready, bodyType, summary);
 
   if (mode === 'standard' && allowDirectNyxPool) {
     const extraPoolConfigs = await phaseDirectNyxPool(rl, ready, summary);
@@ -1733,58 +1720,18 @@ async function selecionarIntegracaoDoDados(rl) {
 }
 
 /**
- * Pra Infobip, o "sender" em credenciais.txt É o próprio número (formato
- * igual ao de dados.txt) — dá pra casar automático. 360/META usam
- * profileCode (um ID interno, não o número), então não tem como.
+ * Integrações do dados.txt aptas a trocar foto (têm número e type válido).
+ * Não exige integrationId: a troca de foto fala direto com o broker.
  */
-function findCredencialForIntegration(credenciais, integration) {
-  if (!integration || integration.type !== 'INFOBIP') return null;
-  return credenciais.find(
-    (cred) => cred.broker === 'INFOBIP' && cred.sender?.trim() === integration.number?.trim()
-  ) || null;
+async function readImageTargets() {
+  const integrations = await processIntegrationData('./dados.txt');
+  return integrations.filter(
+    integ => !isBlankField(integ.number) && ['INFOBIP', '360', 'META'].includes(integ.type)
+  );
 }
 
-/**
- * Escolhe a credencial de imagem. Se `integration` for passada e for do
- * tipo INFOBIP, tenta casar automaticamente pelo número (sender ===
- * integration.number) e nem pergunta nesse caso. Senão, cai pra seleção
- * manual da lista (comportamento de sempre).
- */
-async function selecionarCredencialDeImagem(rl, integration = null) {
-  const credenciais = readCredenciais(CREDENCIAIS_FILE_PATH);
-
-  if (!credenciais.length) {
-    console.log(`\nNenhuma credencial válida encontrada em ${CREDENCIAIS_FILE_PATH}.`);
-    return null;
-  }
-
-  const autoMatch = findCredencialForIntegration(credenciais, integration);
-  if (autoMatch) {
-    console.log(`\nCredencial encontrada automaticamente para ${integration.number}: Infobip | sender: ${autoMatch.sender}`);
-    return autoMatch;
-  }
-
-  console.log(`\n=== CREDENCIAIS DISPONÍVEIS (${CREDENCIAIS_FILE_PATH}) ===`);
-  credenciais.forEach((cred, index) => {
-    const label = cred.broker === 'INFOBIP'
-      ? `Infobip | sender: ${cred.sender}`
-      : `${cred.broker} | profileCode: ${cred.profileCode}`;
-    console.log(`${index + 1} - ${label}`);
-  });
-
-  let selecionada = null;
-  while (!selecionada) {
-    const raw = await ask(rl, '\nEscolha o número da credencial: ');
-    const idx = parseInt(raw.replace(/\D/g, ''), 10) - 1;
-
-    if (Number.isInteger(idx) && credenciais[idx]) {
-      selecionada = credenciais[idx];
-    } else {
-      console.log(`Opção inválida ("${raw}"). Tente novamente.`);
-    }
-  }
-
-  return selecionada;
+function imageTargetLabel(integration) {
+  return `${integration.number} | ${integration.type}`;
 }
 
 async function escolherLogoInfobip(rl) {
@@ -1996,45 +1943,54 @@ async function applyProfileImage(rl, credencial) {
 }
 
 /**
- * Remove só a linha da credencial que acabou de ser usada em credenciais.txt,
- * mantendo as demais intactas — evita reaproveitar por engano a mesma
- * credencial numa próxima vez, sem atrapalhar outras integrações que ainda
- * serão processadas no mesmo loop.
+ * Resolve (e guarda em cache por broker) a imagem a usar: logo da lista pro
+ * Infobip, arquivo de imagens-locais.txt pro 360/META. Perguntar 1x por
+ * broker evita repetir a escolha pra cada número de um lote.
  */
-function removeUsedCredencialFromFile(credencial) {
-  if (!credencial.rawLine || !fs.existsSync(CREDENCIAIS_FILE_PATH)) return;
-
-  const lines = fs.readFileSync(CREDENCIAIS_FILE_PATH, 'utf8').split('\n');
-  const idx = lines.indexOf(credencial.rawLine);
-  if (idx === -1) return;
-
-  lines.splice(idx, 1);
-  fs.writeFileSync(CREDENCIAIS_FILE_PATH, lines.join('\n'));
-  console.log(`Credencial usada removida de ${CREDENCIAIS_FILE_PATH} (evita reaproveitar por engano).`);
+async function resolveImageAssetForBroker(rl, broker, imageAssetByBroker) {
+  if (!imageAssetByBroker[broker]) {
+    console.log(`\nEscolha a imagem a usar para credenciais do broker ${broker}:`);
+    if (broker === 'INFOBIP') {
+      const logoUrl = await escolherLogoInfobip(rl);
+      imageAssetByBroker[broker] = { type: 'url', value: logoUrl };
+    } else {
+      const imagePath = await escolherImagemLocal(rl);
+      if (imagePath) imageAssetByBroker[broker] = { type: 'path', value: imagePath };
+    }
+  }
+  return imageAssetByBroker[broker] || null;
 }
 
 /**
- * Confirma com o usuário se as informações da credencial de imagem já foram
- * adicionadas em credenciais.txt antes de deixar seguir pra seleção.
+ * Aplica a foto de perfil numa credencial já escolhida, usando o asset em
+ * cache do broker dela (sem confirmação individual — quem chama já aprovou
+ * o lote). Retorna { status: 'ok' | 'erro' | 'sem asset', md5, identificador }.
  */
-async function confirmCredenciaisFileReady(rl) {
-  const jaAdicionou = await askYesNo(
-    rl,
-    `Você já adicionou as informações da imagem em ${CREDENCIAIS_FILE_PATH}?`
-  );
+async function applyImageWithCachedAsset(rl, credencial, imageAssetByBroker) {
+  const identificador = credencial.sender || credencial.profileCode;
+  const asset = await resolveImageAssetForBroker(rl, credencial.broker, imageAssetByBroker);
 
-  if (!jaAdicionou) {
-    console.log(`Adicione as informações da imagem em ${CREDENCIAIS_FILE_PATH} antes de continuar. Pulando etapa de imagem.`);
-    return false;
+  if (!asset) {
+    console.log(`Nenhuma imagem definida para o broker ${credencial.broker}, pulando.`);
+    return { status: 'sem asset', md5: '-', identificador };
   }
 
-  return true;
+  const result = await applyProfileImageWithAsset(rl, credencial, asset, { confirm: false });
+  if (result.success) {
+    return { status: 'ok', md5: result.md5, identificador };
+  }
+  return { status: 'erro', md5: '-', identificador };
+}
+
+function imageStatusLabel(status) {
+  if (status === 'ok') return 'sim';
+  if (status === 'erro') return 'erro';
+  return 'não';
 }
 
 /**
  * Pergunta, para UMA integração, se deseja atualizar a foto de perfil dela.
- * credenciais.txt é uma lista independente de dados.txt (sem vínculo por
- * número), então a credencial certa é sempre escolhida manualmente.
+ * A credencial vem da própria linha do dados.txt (ver credencialFromIntegration).
  */
 async function handleIntegrationImageUpdate(rl, integration) {
   const wantsImage = await askYesNo(
@@ -2047,43 +2003,148 @@ async function handleIntegrationImageUpdate(rl, integration) {
     return 'skipped';
   }
 
-  const isReady = await confirmCredenciaisFileReady(rl);
-  if (!isReady) return 'skipped';
-
-  const credencial = await selecionarCredencialDeImagem(rl, integration);
-  if (!credencial) {
-    console.log('Nenhuma credencial encontrada/selecionada, pulando atualização de imagem.');
-    return 'skipped';
-  }
+  const credencial = credencialFromIntegration(integration);
+  if (!credencial) return 'skipped';
 
   const wasApplied = await applyProfileImage(rl, credencial);
-  if (wasApplied) {
-    removeUsedCredencialFromFile(credencial);
-    return 'applied';
+  return wasApplied ? 'applied' : 'failed';
+}
+
+/**
+ * Troca a foto de várias integrações do dados.txt de uma vez: escolhe quais
+ * incluir, escolhe a imagem UMA vez por broker (antes de começar, pra poder
+ * deixar rodando), aprova o resumo e aplica em todas. Cada número recebe sua
+ * própria variação randomizada da imagem escolhida.
+ */
+async function menuAdicionarImagemEmLote(rl) {
+  const targets = await readImageTargets();
+  if (!targets.length) {
+    console.log('\nNenhuma integração com type INFOBIP/360/META encontrada em ./dados.txt.');
+    return;
   }
-  return 'failed';
+
+  console.log('\n=== INTEGRAÇÕES DISPONÍVEIS (dados.txt) ===');
+  targets.forEach((integ, index) => {
+    console.log(`${index + 1} - ${imageTargetLabel(integ)}`);
+  });
+
+  const raw = await ask(rl, '\nDigite os números da lista a INCLUIR (separados por vírgula), ou ENTER para todas: ');
+  let selecionadas = targets;
+  if (raw) {
+    const indexes = [...new Set(raw.split(',').map(s => parseInt(s.trim(), 10) - 1))];
+    const invalid = indexes.filter(i => !Number.isInteger(i) || !targets[i]);
+    if (invalid.length) {
+      console.log(`Entrada inválida ("${raw}"). Use números da lista separados por vírgula.`);
+      return;
+    }
+    selecionadas = indexes.map(i => targets[i]);
+  }
+
+  // Monta as credenciais e separa quem não tem os campos necessários.
+  const itens = [];
+  const results = [];
+  for (const integ of selecionadas) {
+    const credencial = credencialFromIntegration(integ);
+    if (credencial) {
+      itens.push({ integ, credencial });
+    } else {
+      results.push({ numero: integ.number, broker: integ.type, md5: '-', status: 'dados incompletos' });
+    }
+  }
+
+  if (!itens.length) {
+    console.log('Nenhuma integração com dados completos para trocar a imagem.');
+    return;
+  }
+
+  // Escolhe a imagem de cada broker presente ANTES de começar.
+  const imageAssetByBroker = {};
+  const brokers = [...new Set(itens.map(({ credencial }) => credencial.broker))];
+  for (const broker of brokers) {
+    await resolveImageAssetForBroker(rl, broker, imageAssetByBroker);
+  }
+
+  const confirmed = await confirmSummary(rl, 'Resumo da troca de imagem em lote:', {
+    numeros: itens.length,
+    ...(results.length ? { ignorados_dados_incompletos: results.length } : {}),
+    ...Object.fromEntries(brokers.map(broker => [
+      `imagem_${broker}`,
+      imageAssetByBroker[broker] ? imageAssetByBroker[broker].value : 'NENHUMA (números desse broker serão pulados)',
+    ])),
+  });
+  if (!confirmed) {
+    console.log('Troca de imagem em lote cancelada.');
+    return;
+  }
+
+  for (const [index, { integ, credencial }] of itens.entries()) {
+    console.log(`\n[${index + 1}/${itens.length}] ${imageTargetLabel(integ)}`);
+    try {
+      const result = await applyImageWithCachedAsset(rl, credencial, imageAssetByBroker);
+      results.push({ numero: integ.number, broker: credencial.broker, md5: result.md5, status: result.status });
+    } catch (error) {
+      console.error('❌ Falha na troca de imagem:', error.message);
+      results.push({ numero: integ.number, broker: credencial.broker, md5: '-', status: 'erro' });
+    }
+  }
+
+  console.log('\n=== RESUMO DA TROCA DE IMAGEM EM LOTE ===');
+  console.table(results);
 }
 
 async function menuAdicionarImagem(rl) {
-  const isReady = await confirmCredenciaisFileReady(rl);
-  if (!isReady) return;
+  while (true) {
+    console.log('\n=== ADICIONAR IMAGEM ===');
+    console.log('1 - Uma integração (escolher na lista do dados.txt)');
+    console.log('2 - Em lote (várias integrações do dados.txt de uma vez)');
+    console.log('0 - Voltar');
 
-  const credencial = await selecionarCredencialDeImagem(rl);
+    const choice = await ask(rl, '\nEscolha uma opção: ');
+    if (choice === '1') break;
+    if (choice === '2') {
+      await menuAdicionarImagemEmLote(rl);
+      return;
+    }
+    if (choice === '0') return;
+    console.log(`Opção inválida ("${choice}"). Tente novamente.`);
+  }
+
+  const targets = await readImageTargets();
+  if (!targets.length) {
+    console.log('\nNenhuma integração com type INFOBIP/360/META encontrada em ./dados.txt.');
+    return;
+  }
+
+  console.log('\n=== INTEGRAÇÕES DISPONÍVEIS (dados.txt) ===');
+  targets.forEach((integ, index) => {
+    console.log(`${index + 1} - ${imageTargetLabel(integ)}`);
+  });
+
+  let selecionada = null;
+  while (!selecionada) {
+    const raw = await ask(rl, '\nEscolha o número da integração: ');
+    const idx = parseInt(raw.replace(/\D/g, ''), 10) - 1;
+    if (Number.isInteger(idx) && targets[idx]) {
+      selecionada = targets[idx];
+    } else {
+      console.log(`Opção inválida ("${raw}"). Tente novamente.`);
+    }
+  }
+
+  const credencial = credencialFromIntegration(selecionada);
   if (!credencial) return;
 
-  const wasApplied = await applyProfileImage(rl, credencial);
-  if (wasApplied) {
-    removeUsedCredencialFromFile(credencial);
-  }
+  await applyProfileImage(rl, credencial);
 
   console.log('\nProcesso de imagem concluído.');
 }
 
 async function menuOnboardingIntegração(rl) {
   console.log('\n=== ONBOARDING INTEGRAÇÃO ===');
-  console.log('Esse fluxo lê ./dados.txt, cria as integrações, salva no DynamoDB e testa o envio.');
+  console.log('Esse fluxo lê ./dados.txt, cria as integrações, (opcionalmente) testa o template logo em seguida e salva no DynamoDB.');
 
   const bodyType = await chooseBodyType(rl);
+  const runTest = await askYesNo(rl, 'Deseja realizar o teste de template logo após criar/editar cada integração?');
 
   if (requiresTemplateConfigDisabled(bodyType) && addTemplateConfig) {
     console.log(`\naddTemplateConfig estava true; ajustando para false automaticamente (obrigatório para o bodyType ${bodyType}).`);
@@ -2091,25 +2152,136 @@ async function menuOnboardingIntegração(rl) {
   }
 
   console.log('\nIniciando onboarding completo...');
-  await createIntegration(bodyType);
+  await createIntegration(bodyType, runTest);
   console.log('\nOnboarding completo finalizado. Veja o arquivo integracoes-criadas.json');
 }
 
 async function menuOnboardingCompleto(rl) {
   console.log('\n=== ONBOARDING COMPLETO ===');
-  console.log('Fluxo em fases. Depois de criar/editar, escolhe o MODO:');
+  console.log('Fluxo em fases. Depois de criar/editar, pergunta se quer rodar o TESTE de template');
+  console.log('(primeira etapa, antes de qualquer configuração) e então escolhe o MODO:');
   console.log('  1) Massivo — coleta template/work_around/imagem/capacidade do pool via Nyx UMA VEZ,');
   console.log('     mostra resumo pra aprovar e deixa excluir números, aplica em todos os incluídos.');
   console.log('     Bom pra várias integrações indo pro mesmo pool.');
   console.log('  2) Padrão — pergunta número a número, como sempre foi (permite múltiplos pools por');
   console.log('     número, e só com "Corpo com variável" oferece adicionar direto ao pool via Nyx).');
-  console.log('Em ambos: teste de envio roda antes de colocar no pool -> DynamoDB -> tabela resumo.');
+  console.log('Em ambos: (teste de template opcional já rodou) -> configuração -> pool via Nyx -> DynamoDB -> tabela resumo.');
 
   const bodyType = await chooseBodyType(rl);
 
   console.log('\nIniciando onboarding completo...');
   await runOnboardingCompleto(rl, bodyType);
   console.log('\nOnboarding completo finalizado. Veja o arquivo integracoes-criadas.json');
+}
+
+/**
+ * Escolhe quais templates da fonte testar (um só, ou todos). Retorna o array
+ * de nomes escolhido.
+ */
+async function pickSourceTemplates(rl, sourceTemplateNames) {
+  if (sourceTemplateNames.length === 1) {
+    console.log(`Template a testar: ${sourceTemplateNames[0]}`);
+    return sourceTemplateNames;
+  }
+
+  while (true) {
+    console.log('\nQual template da fonte deseja testar?');
+    console.log('0 - Todos (um envio de teste por template, por número)');
+    sourceTemplateNames.forEach((name, index) => {
+      console.log(`${index + 1} - ${name}`);
+    });
+
+    const raw = await ask(rl, '\nEscolha uma opção: ');
+    const choice = parseInt(raw.replace(/\D/g, ''), 10);
+    if (choice === 0) return sourceTemplateNames;
+    if (Number.isInteger(choice) && sourceTemplateNames[choice - 1]) {
+      return [sourceTemplateNames[choice - 1]];
+    }
+    console.log(`Opção inválida ("${raw}"). Tente novamente.`);
+  }
+}
+
+/**
+ * Pergunta (1x pro lote) se deve testar o template nos números novos ANTES
+ * de replicar a configuração e, se sim, o tipo de teste e qual template.
+ * Retorna null se o usuário não quiser testar; senão { bodyType,
+ * templateNames }, onde templateNames = null significa "usar o templateName
+ * disponível de cada número novo (coluna do duplicar.txt, da 2ª linha em
+ * diante)".
+ */
+async function askDuplicarTestConfig(rl, sourceTemplateNames) {
+  const wantsTest = await askYesNo(rl, 'Deseja testar o envio de template nos números novos ANTES de replicar a configuração?');
+  if (!wantsTest) return null;
+
+  const bodyType = await chooseBodyType(rl);
+
+  while (true) {
+    console.log('\nQual template deseja testar?');
+    console.log('1 - O template disponível de cada número novo (coluna templateName do duplicar.txt, da 2ª linha em diante)');
+    console.log(sourceTemplateNames.length
+      ? '2 - Template(s) da fonte (ativos no template_config_pool)'
+      : '2 - Template(s) da fonte (indisponível: a fonte não tem template ativo)');
+
+    const raw = await ask(rl, '\nEscolha uma opção: ');
+    if (raw === '1') return { bodyType, templateNames: null };
+    if (raw === '2' && sourceTemplateNames.length) {
+      return { bodyType, templateNames: await pickSourceTemplates(rl, sourceTemplateNames) };
+    }
+    console.log(`Opção inválida ("${raw}"). Tente novamente.`);
+  }
+}
+
+/**
+ * Define o tamanhoDiario que cada número novo terá nos pools via Nyx:
+ * um valor único pra todos, ou o tamanho diário que o número base (fonte)
+ * tem em cada pool (banco pool, pool_integration.daily_value).
+ * Retorna { single } ou { byPool: Map<pool_id, valor> }.
+ */
+async function askDuplicarDailyValue(rl, fonteId, poolIds) {
+  while (true) {
+    console.log('\nComo definir o tamanhoDiario nos pools?');
+    console.log('1 - Informar um valor único (aplicado a todos os pools)');
+    console.log('2 - Copiar o tamanho diário do número base (por pool)');
+
+    const raw = await ask(rl, '\nEscolha uma opção: ');
+
+    if (raw === '1') {
+      const single = await askNumber(rl, 'Valor do tamanhoDiario (aplicado a todos): ');
+      return { single };
+    }
+
+    if (raw === '2') {
+      let rows;
+      try {
+        rows = await getPoolIntegrationDailyValues({ integrationId: fonteId });
+      } catch (error) {
+        console.error('❌ Não consegui ler o tamanho diário do número base:', error.message);
+        if (/permission denied/i.test(error.message)) {
+          console.log('Dica: o usuário do banco não tem acesso ao banco "pool". Defina POOL_DB_USERNAME e POOL_DB_PASSWORD no .env (usuário com SELECT em pool_integration).');
+        }
+        continue;
+      }
+
+      const byPool = new Map(
+        rows.filter(r => r.daily_value != null).map(r => [r.pool_id, Number(r.daily_value)])
+      );
+
+      console.log('\nTamanho diário do número base por pool:');
+      console.table(poolIds.map(poolId => ({
+        pool_id: poolId,
+        tamanhoDiario: byPool.has(poolId) ? byPool.get(poolId) : 'sem registro (será pulado no Nyx)',
+      })));
+
+      if (poolIds.some(poolId => byPool.get(poolId) === 0)) {
+        console.log('⚠️ Há pools com tamanho diário 0 no número base — os números novos entrariam nesses pools com 0.');
+      }
+
+      if (await askYesNo(rl, 'Usar esses valores?')) return { byPool };
+      continue;
+    }
+
+    console.log(`Opção inválida ("${raw}"). Tente novamente.`);
+  }
 }
 
 /**
@@ -2143,16 +2315,26 @@ async function runDuplicarConfiguracao(rl) {
   }
 
   const fonteWorkAround = await getIntegrationWorkAround({ integrationId: fonteId });
-  const fontePools = await getTemplateConfigPoolRows({ integrationId: fonteId });
+  // Só replica templates ATIVOS: o insert sempre grava status='ACTIVE', então
+  // copiar uma linha inativa da fonte a reativaria no número novo.
+  const fontePoolsTodos = await getTemplateConfigPoolRows({ integrationId: fonteId });
+  const fontePools = fontePoolsTodos.filter(p => String(p.status).toUpperCase() === 'ACTIVE');
+  const poolsIgnorados = fontePoolsTodos.filter(p => String(p.status).toUpperCase() !== 'ACTIVE');
+  if (poolsIgnorados.length) {
+    console.log(`\nIgnorando ${poolsIgnorados.length} linha(s) de template_config_pool NÃO ativas na fonte:`);
+    poolsIgnorados.forEach(p => {
+      console.log(`  - status=${p.status}, pool_id=${p.pool_id}, name=${p.name}`);
+    });
+  }
 
   if (!fonteWorkAround && !fontePools.length) {
-    console.log('❌ Não encontrei integration_work_around nem template_config_pool para essa integração fonte. Nada para duplicar.');
+    console.log('❌ Não encontrei integration_work_around nem template_config_pool ATIVO para essa integração fonte. Nada para duplicar.');
     return;
   }
 
   console.log(`\n=== Configuração encontrada para ${fonte.number} ===`);
   console.log(`integration_work_around: ${fonteWorkAround ? `new_from=${fonteWorkAround.new_from}, block_response=${fonteWorkAround.block_response}` : 'nenhum'}`);
-  console.log(`template_config_pool: ${fontePools.length} linha(s) encontrada(s)`);
+  console.log(`template_config_pool: ${fontePools.length} linha(s) ativa(s) encontrada(s)`);
   fontePools.forEach((p, i) => {
     console.log(`  ${i + 1} - pool_id=${p.pool_id}, new_from=${p.new_from}, button_url=${p.button_url}, new_integration_id=${p.new_integration_id}, name=${p.name}`);
   });
@@ -2167,30 +2349,44 @@ async function runDuplicarConfiguracao(rl) {
     return;
   }
 
+  // Teste de template (opcional): perguntado 1x pro lote; roda PRIMEIRO,
+  // logo após criar/editar os números e antes de replicar a configuração.
+  const testConfig = await askDuplicarTestConfig(rl, [...new Set(fontePools.map(p => p.name).filter(Boolean))]);
+
   // Pergunta uma única vez pro lote inteiro se deve também ir pro pool via
-  // Nyx, com a mesma capacidade pra todos os números novos.
+  // Nyx, e como definir o tamanhoDiario (valor único ou copiado da fonte).
+  const poolIds = [...new Set(fontePools.map(p => p.pool_id))];
   let nyxCapacity = null;
   if (fontePools.length) {
     const wantsNyx = await askYesNo(rl, 'Deseja também adicionar esses números novos aos pools via Nyx?');
     if (wantsNyx) {
-      const tamanhoDiario = await askNumber(rl, 'Valor do tamanhoDiario (aplicado a todos): ');
+      const daily = await askDuplicarDailyValue(rl, fonteId, poolIds);
       const onlyMassive = await askYesNo(rl, 'onlyMassive deve ser true?');
       const onlyInsert = await askYesNo(rl, 'onlyInsert deve ser true?');
-      nyxCapacity = { tamanhoDiario, onlyMassive, onlyInsert };
+      nyxCapacity = { ...daily, onlyMassive, onlyInsert };
     }
   }
 
-  const resultados = [];
+  // Foto de perfil (opcional): perguntada 1x pro lote; a imagem de cada
+  // broker é escolhida 1x e reaproveitada (cada número recebe uma variação).
+  const wantsImage = await askYesNo(rl, 'Deseja atualizar a imagem de perfil dos números novos?');
+  const imageAssetByBroker = {};
 
+  const resultados = [];
+  const prontos = [];
+
+  // Fase 1: criar/editar todos os números novos.
+  console.log('\n=== ETAPA 1: criar/editar integrações dos números novos ===');
   for (const novo of novos) {
-    console.log(`\n=== Duplicando configuração para ${novo.number} ===`);
     const linha = {
       numero: novo.number,
       integrationId: null,
       criacao: 'erro',
+      teste: '-',
       workAround: '-',
       poolsReplicados: 0,
       poolsNyx: 0,
+      imagem: '-',
     };
     resultados.push(linha);
 
@@ -2205,6 +2401,42 @@ async function runDuplicarConfiguracao(rl) {
       console.error(`❌ ${novo.number}: falha ao criar/editar integração.`, error?.response?.data || error.message);
       continue;
     }
+
+    prontos.push({ novo, linha });
+  }
+
+  // Fase 2: teste de template (opcional), antes de qualquer replicação.
+  let seguirComDuplicacao = prontos.length > 0;
+  if (testConfig && prontos.length) {
+    console.log('\n=== ETAPA 2: teste de template ===');
+    for (const { novo, linha } of prontos) {
+      const templateNames = testConfig.templateNames || [novo.templateName].filter(name => !isBlankField(name));
+      if (!templateNames.length) {
+        console.log(`Nenhum template disponível para testar ${novo.number}, pulando teste.`);
+        linha.teste = 'sem template';
+        continue;
+      }
+      try {
+        for (const templateName of templateNames) {
+          console.log(`Testando template ${templateName} em ${novo.number}...`);
+          await sendTemplateTest({ ...novo, templateName }, testConfig.bodyType);
+        }
+        linha.teste = 'disparado';
+      } catch (error) {
+        console.error(`❌ Falha no teste de template de ${novo.number}.`, error.message);
+        linha.teste = 'erro';
+      }
+    }
+
+    seguirComDuplicacao = await askYesNo(rl, 'Teste concluído. Continuar e replicar a configuração nos números novos?');
+    if (!seguirComDuplicacao) {
+      console.log('Replicação da configuração cancelada após o teste.');
+    }
+  }
+
+  // Fase 3: replicar a configuração (work_around, template_config_pool, Nyx, imagem).
+  for (const { novo, linha } of seguirComDuplicacao ? prontos : []) {
+    console.log(`\n=== Duplicando configuração para ${novo.number} ===`);
 
     if (fonteWorkAround) {
       try {
@@ -2234,22 +2466,45 @@ async function runDuplicarConfiguracao(rl) {
       } catch (error) {
         console.error(`❌ Falha ao replicar template_config_pool (pool_id=${poolRow.pool_id}) para ${novo.number}.`, error.message);
       }
+    }
 
-      if (nyxCapacity) {
+    // Nyx: uma vez por pool (a fonte pode ter vários templates no mesmo pool).
+    if (nyxCapacity) {
+      for (const poolId of poolIds) {
+        const tamanhoDiario = nyxCapacity.byPool ? nyxCapacity.byPool.get(poolId) : nyxCapacity.single;
+        if (tamanhoDiario == null) {
+          console.log(`⚠️ Sem tamanho diário do número base para o pool ${poolId}; pulando Nyx nesse pool.`);
+          continue;
+        }
         try {
           await addIntegrationToNyxPool({
             integrationId: novo.integrationId,
-            poolId: poolRow.pool_id,
+            poolId,
             broker: resolveBrokerForNyx(novo.type),
-            tamanhoDiario: nyxCapacity.tamanhoDiario,
+            tamanhoDiario,
             onlyMassive: nyxCapacity.onlyMassive,
             onlyInsert: nyxCapacity.onlyInsert,
           });
           linha.poolsNyx++;
-          console.log(`✅ ${novo.number} adicionado ao pool ${poolRow.pool_id} via Nyx.`);
+          console.log(`✅ ${novo.number} adicionado ao pool ${poolId} via Nyx (tamanhoDiario=${tamanhoDiario}).`);
         } catch (error) {
-          console.error(`❌ Falha ao adicionar ${novo.number} ao pool ${poolRow.pool_id} via Nyx.`, error?.response?.data || error.message);
+          console.error(`❌ Falha ao adicionar ${novo.number} ao pool ${poolId} via Nyx.`, error?.response?.data || error.message);
         }
+      }
+    }
+
+    if (wantsImage) {
+      try {
+        const credencial = credencialFromIntegration(novo);
+        if (!credencial) {
+          linha.imagem = 'dados incompletos';
+        } else {
+          const result = await applyImageWithCachedAsset(rl, credencial, imageAssetByBroker);
+          linha.imagem = result.status;
+        }
+      } catch (error) {
+        console.error(`❌ Falha na atualização de imagem para ${novo.number}.`, error.message);
+        linha.imagem = 'erro';
       }
     }
   }

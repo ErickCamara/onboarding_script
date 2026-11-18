@@ -4,8 +4,38 @@
     {
       "name": "pool-report",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["--prefix", "/Users/erickcamara/dev/NEFEX/Pool_Report", "start"],
+      "runtimeArgs": [
+        "--prefix",
+        "/Users/erickcamara/dev/NEFEX/Pool_Report",
+        "start"
+      ],
       "port": 3300
+    },
+    {
+      "name": "faca-e-encante",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "--prefix",
+        "/Users/erickcamara/Library/Mobile Documents/com~apple~CloudDocs/Fa\u00e7a e Encante/faca-e-encante-lembrancinhas",
+        "run",
+        "dev"
+      ],
+      "port": 8080
+    },
+    {
+      "name": "lp-facaeencante",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "--prefix",
+        "/Users/erickcamara/Projetos/delight-and-charm-academy",
+        "run",
+        "dev",
+        "--",
+        "--port",
+        "5180",
+        "--strictPort"
+      ],
+      "port": 5180
     }
   ]
 }
