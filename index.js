@@ -1915,6 +1915,9 @@ async function applyProfileImageWithAsset(rl, credencial, asset, { confirm = tru
     return { success: false, md5: null };
   } catch (error) {
     console.error('❌ Erro ao atualizar imagem:', error?.response?.data || error.message);
+    if (/Could not load credentials/i.test(error.message)) {
+      console.log('Dica: faltam credenciais AWS pro upload da imagem no S3 (Infobip). Defina AWS_S3_ACCESS_KEY_ID e AWS_S3_SECRET_ACCESS_KEY no .env (e, se o bucket já estiver público, SKIP_PUBLIC_POLICY_SETUP=1).');
+    }
     return { success: false, md5: null };
   }
 }

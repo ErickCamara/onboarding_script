@@ -7,6 +7,9 @@
  * também é subido no S3 (bucket nefex-imagens-publicas, key UUID), com a
  * bucket policy de leitura pública garantida antes do primeiro upload.
  *
+ * Credenciais do S3: AWS_S3_ACCESS_KEY_ID e AWS_S3_SECRET_ACCESS_KEY no .env
+ * (se ausentes, usa a cadeia padrão da AWS, ex: ~/.aws/credentials).
+ *
  * Variáveis de ambiente opcionais:
  *   S3_BUCKET (default nefex-imagens-publicas)
  *   AWS_REGION (default us-east-1)
@@ -311,7 +314,14 @@ async function uploadToS3(s3, buffer, key) {
 let s3ClientSingleton = null;
 function getS3Client() {
   if (!s3ClientSingleton) {
-    s3ClientSingleton = new S3Client({ region: AWS_REGION });
+    // Credenciais explícitas do .env quando definidas; senão cai na cadeia
+    // padrão da AWS (variáveis AWS_ACCESS_KEY_ID/..., ~/.aws/credentials).
+    const accessKeyId = process.env.AWS_S3_ACCESS_KEY_ID;
+    const secretAccessKey = process.env.AWS_S3_SECRET_ACCESS_KEY;
+    s3ClientSingleton = new S3Client({
+      region: AWS_REGION,
+      ...(accessKeyId && secretAccessKey ? { credentials: { accessKeyId, secretAccessKey } } : {}),
+    });
   }
   return s3ClientSingleton;
 }
